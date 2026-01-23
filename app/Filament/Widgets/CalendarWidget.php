@@ -14,6 +14,7 @@ use Filament\Forms\Components\Hidden;
 use Filament\Forms\Components\Placeholder;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
+use Filament\Forms\Components\ToggleButtons;
 use Filament\Notifications\Notification;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
@@ -148,14 +149,12 @@ class CalendarWidget extends FullCalendarWidget
                 'hour12' => false,
             ],
 
-
-            // ✅ Arrastar: abre o edit. Se não puder, o EditAction vira "somente mensagem" e fica só com Fechar.
+            // ✅ Arrastar: abre o edit.
             'eventDrop' => RawJs::make(<<<'JS'
 function(info) {
     const lw = info?.view?.calendar?.el?.__livewire;
     if (!lw) return;
 
-    // Mantém o UI no lugar até salvar / ou até o refresh
     if (typeof info.revert === 'function') info.revert();
 
     const eventId = info.event?.id;
@@ -170,33 +169,6 @@ function(info) {
             end: info.event?.endStr || null,
         }
     });
-}
-JS),
-
-            // ✅ Tooltip (Filament / Alpine). Mantém também title como fallback.
-            'eventDidMount' => RawJs::make(<<<'JS'
-function({ event, el }) {
-    if (event.display === 'background') return;
-
-    const content =
-        event?.extendedProps?.procedimento
-        ?? event?.title
-        ?? '';
-
-    if (!content) return;
-
-    // Tooltip do Filament (tippy via Alpine)
-    el.setAttribute('x-tooltip', 'tooltip');
-    el.setAttribute('x-data', '{ tooltip: ' + JSON.stringify(content) + ' }');
-
-    // Fallback: tooltip nativo do browser (caso o x-tooltip falhe)
-    el.setAttribute('title', content);
-
-    // IMPORTANTÍSSIMO: como o FullCalendar injeta nós dinamicamente,
-    // forçamos o Alpine a inicializar o tooltip nesse nó
-    if (window.Alpine && typeof window.Alpine.initTree === 'function') {
-        window.Alpine.initTree(el);
-    }
 }
 JS),
         ];
@@ -215,15 +187,10 @@ function({ event, el }) {
 
     if (!content) return;
 
-    // Tooltip do Filament (tippy via Alpine)
     el.setAttribute('x-tooltip', 'tooltip');
     el.setAttribute('x-data', '{ tooltip: ' + JSON.stringify(content) + ' }');
-
-    // Fallback: tooltip nativo do browser (caso o x-tooltip falhe)
     el.setAttribute('title', content);
 
-    // IMPORTANTÍSSIMO: como o FullCalendar injeta nós dinamicamente,
-    // forçamos o Alpine a inicializar o tooltip nesse nó
     if (window.Alpine && typeof window.Alpine.initTree === 'function') {
         window.Alpine.initTree(el);
     }
@@ -351,11 +318,9 @@ JS;
             Hidden::make('evento_id'),
             Hidden::make('dia')->dehydrated(false),
 
-            // ✅ flags para "somente mensagem"
             Hidden::make('somente_msg')->dehydrated(false),
             Hidden::make('somente_msg_texto')->dehydrated(false),
 
-            // Mantém compatibilidade com sua lógica antiga
             Hidden::make('sem_horario')->dehydrated(false),
             Hidden::make('sem_horario_msg')->dehydrated(false),
 
@@ -374,6 +339,28 @@ JS;
                 ->label('Número do procedimento')
                 ->maxLength(80)
                 ->required(fn (Get $get) => ! $get('somente_msg'))
+                ->visible(fn (Get $get) => ! $get('somente_msg')),
+
+            // ✅ NOVO: WhatsApp
+            TextInput::make('whatsapp')
+                ->label('WhatsApp')
+                ->tel()
+                ->maxLength(30)
+                ->placeholder('(99) 99999-9999')
+                ->visible(fn (Get $get) => ! $get('somente_msg')),
+
+            // ✅ NOVO: Presencial (verde) x Online (azul)
+            ToggleButtons::make('oitiva_online')
+                ->label('Modalidade da oitiva')
+                ->boolean(
+                    trueLabel: 'Online',
+                    falseLabel: 'Presencial',
+                )
+                ->colors([
+                    0 => 'success', // Presencial
+                    1 => 'info',    // Online
+                ])
+                ->default(false) // ✅ Presencial selecionado por padrão
                 ->visible(fn (Get $get) => ! $get('somente_msg')),
 
             Select::make('hora_inicio')
@@ -415,7 +402,6 @@ JS;
 
             Actions\CreateAction::make()
                 ->label('Agendar')
-
                 ->createAnother(false)
                 ->modalSubmitAction(fn (\Filament\Actions\Action $action) => $action->visible(fn (): bool => ! $this->modalSemHorario))
                 ->modalCancelAction(function (\Filament\Actions\Action $action) {
@@ -447,6 +433,9 @@ JS;
 
                             'intimado' => null,
                             'numero_procedimento' => null,
+                            'whatsapp' => null,
+                            'oitiva_online' => false, // ✅ Presencial default
+
                             'hora_inicio' => null,
                             'starts_at' => null,
                             'ends_at' => null,
@@ -473,6 +462,9 @@ JS;
 
                             'intimado' => null,
                             'numero_procedimento' => null,
+                            'whatsapp' => null,
+                            'oitiva_online' => false,
+
                             'hora_inicio' => null,
                             'starts_at' => null,
                             'ends_at' => null,
@@ -495,6 +487,9 @@ JS;
 
                             'intimado' => null,
                             'numero_procedimento' => null,
+                            'whatsapp' => null,
+                            'oitiva_online' => false,
+
                             'hora_inicio' => null,
                             'starts_at' => null,
                             'ends_at' => null,
@@ -517,6 +512,9 @@ JS;
 
                             'intimado' => null,
                             'numero_procedimento' => null,
+                            'whatsapp' => null,
+                            'oitiva_online' => false,
+
                             'hora_inicio' => null,
                             'starts_at' => null,
                             'ends_at' => null,
@@ -541,6 +539,9 @@ JS;
 
                             'intimado' => null,
                             'numero_procedimento' => null,
+                            'whatsapp' => null,
+                            'oitiva_online' => false,
+
                             'hora_inicio' => null,
                             'starts_at' => null,
                             'ends_at' => null,
@@ -565,8 +566,11 @@ JS;
                         'hora_inicio' => $hora,
                         'starts_at' => $inicio->toDateTimeString(),
                         'ends_at' => $fim->toDateTimeString(),
+
                         'intimado' => null,
                         'numero_procedimento' => null,
+                        'whatsapp' => null,
+                        'oitiva_online' => false,
                     ]);
                 })
                 ->mutateFormDataUsing(function (array $data): array {
@@ -606,10 +610,10 @@ JS;
                     }
 
                     $data['user_id'] = $this->agendaUserId;
-
-                    // ✅ IMPORTANTE: grava quem criou
-                    // (precisa existir a coluna created_by na tabela eventos)
                     $data['created_by'] = auth()->id();
+
+                    // ✅ garante boolean (Presencial default)
+                    $data['oitiva_online'] = (bool) ($data['oitiva_online'] ?? false);
 
                     unset(
                         $data['dia'],
@@ -646,7 +650,6 @@ JS;
                     /** @var \App\Models\Evento $record */
                     $this->modalSemHorario = false;
 
-                    // ✅ Regra: só admin ou criador pode editar
                     if (! Gate::allows('update', $record)) {
                         $this->modalSemHorario = true;
 
@@ -668,6 +671,8 @@ JS;
 
                             'intimado' => $record->intimado,
                             'numero_procedimento' => $record->numero_procedimento,
+                            'whatsapp' => $record->whatsapp,
+                            'oitiva_online' => (bool) $record->oitiva_online,
                         ]);
 
                         $this->forceCalendarRefresh();
@@ -694,8 +699,11 @@ JS;
                             'hora_inicio' => null,
                             'starts_at' => null,
                             'ends_at' => null,
+
                             'intimado' => $record->intimado,
                             'numero_procedimento' => $record->numero_procedimento,
+                            'whatsapp' => $record->whatsapp,
+                            'oitiva_online' => (bool) $record->oitiva_online,
                         ]);
 
                         $this->forceCalendarRefresh();
@@ -718,8 +726,11 @@ JS;
                             'hora_inicio' => null,
                             'starts_at' => null,
                             'ends_at' => null,
+
                             'intimado' => $record->intimado,
                             'numero_procedimento' => $record->numero_procedimento,
+                            'whatsapp' => $record->whatsapp,
+                            'oitiva_online' => (bool) $record->oitiva_online,
                         ]);
 
                         $this->forceCalendarRefresh();
@@ -744,8 +755,11 @@ JS;
                             'hora_inicio' => null,
                             'starts_at' => null,
                             'ends_at' => null,
+
                             'intimado' => $record->intimado,
                             'numero_procedimento' => $record->numero_procedimento,
+                            'whatsapp' => $record->whatsapp,
+                            'oitiva_online' => (bool) $record->oitiva_online,
                         ]);
 
                         $this->forceCalendarRefresh();
@@ -777,8 +791,11 @@ JS;
                         'hora_inicio' => $hora,
                         'starts_at' => $inicio->toDateTimeString(),
                         'ends_at' => $fim->toDateTimeString(),
+
                         'intimado' => $record->intimado,
                         'numero_procedimento' => $record->numero_procedimento,
+                        'whatsapp' => $record->whatsapp,
+                        'oitiva_online' => (bool) $record->oitiva_online,
                     ]);
                 })
                 ->mutateFormDataUsing(function (array $data): array {
@@ -821,6 +838,9 @@ JS;
                     }
 
                     $data['user_id'] = $this->agendaUserId;
+
+                    // ✅ garante boolean
+                    $data['oitiva_online'] = (bool) ($data['oitiva_online'] ?? false);
 
                     unset(
                         $data['dia'],
@@ -896,16 +916,24 @@ JS;
                 $proc = $e->numero_procedimento ?: null;
 
                 $hora = $e->starts_at ? Carbon::parse($e->starts_at)->format('G') : '--';
+                $tipo = $e->oitiva_online ? 'Online' : 'Presencial';
 
-                // ✅ Ex.: "14h Mayso 2025.123"
-                $title = "{$hora}h {$intimado}" . ($proc ? " {$proc}" : '');
+                // ✅ Ex.: "14h Fulano 2025.123 (Presencial)"
+                $title = "{$hora}h {$intimado}" . ($proc ? " {$proc}" : '') . " ({$tipo})";
+
+                // ✅ Tooltip (multi-linha)
+                $tooltip = array_filter([
+                    $proc ? "Procedimento: {$proc}" : null,
+                    $e->whatsapp ? "WhatsApp: {$e->whatsapp}" : null,
+                    "Modalidade: {$tipo}",
+                ]);
 
                 return [
                     'id' => (string) $e->id,
                     'title' => $title,
                     'start' => $e->starts_at,
                     'end' => $e->ends_at,
-                    'procedimento' => $proc ? "Procedimento: {$proc}" : null,
+                    'procedimento' => implode("\n", $tooltip),
                 ];
             })
             ->all();

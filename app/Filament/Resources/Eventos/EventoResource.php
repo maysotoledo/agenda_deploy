@@ -21,11 +21,6 @@ class EventoResource extends Resource
 {
     protected static ?string $model = Evento::class;
 
-    /**
-     * ✅ Evita erros de tipagem do PHP/Filament:
-     * não redeclare $navigationIcon / $navigationGroup como propriedades.
-     * Use métodos.
-     */
     public static function getNavigationIcon(): string|\BackedEnum|null
     {
         return 'heroicon-o-calendar-days';
@@ -92,6 +87,21 @@ class EventoResource extends Resource
                     ->label('Intimado')
                     ->searchable()
                     ->wrap(),
+
+                // ✅ NOVO: WhatsApp
+                TextColumn::make('whatsapp')
+                    ->label('WhatsApp')
+                    ->searchable()
+                    ->toggleable()
+                    ->placeholder('-'),
+
+                // ✅ NOVO: Modalidade (Presencial verde / Online azul)
+                TextColumn::make('oitiva_online')
+                    ->label('Modalidade')
+                    ->formatStateUsing(fn (bool|null $state): string => ($state ?? false) ? 'Online' : 'Presencial')
+                    ->badge()
+                    ->color(fn (bool|null $state): string => ($state ?? false) ? 'info' : 'success')
+                    ->sortable(),
 
                 TextColumn::make('numero_procedimento')
                     ->label('Procedimento')
@@ -168,47 +178,47 @@ class EventoResource extends Resource
             ->toolbarActions([
                 BulkActionGroup::make([
                     BulkAction::make('cancelar_selecionados')
-                    ->label('Cancelar selecionados')
-                    ->icon('heroicon-o-x-circle')
-                    ->color('danger')
-                    ->requiresConfirmation()
-                    ->modalHeading('Cancelar agendamentos selecionados?')
-                    ->modalDescription('O cancelamento preserva o histórico e pode ser restaurado.')
-                    ->action(function (Collection $records): void {
-                        $userId = Auth::id();
-                    
-                        foreach ($records as $record) {
-                            /** @var \App\Models\Evento $record */
-                            if ($record->trashed()) {
-                                continue;
-                            }
-                        
-                            $record->forceFill([
-                                'updated_by' => $userId,
-                                'deleted_by' => $userId,
-                            ])->save();
-                            
-                            $record->delete(); // soft delete
-                        }
-                    }),
-                BulkAction::make('excluir_definitivo_selecionados')
-                    ->label('Excluir definitivo selecionados')
-                    ->icon('heroicon-o-trash')
-                    ->color('danger')
-                    ->requiresConfirmation()
-                    ->modalHeading('Excluir definitivamente os agendamentos selecionados?')
-                    ->modalDescription('⚠️ Esta ação é irreversível.')
-                    ->action(function (Collection $records): void {
-                        foreach ($records as $record) {
-                            /** @var \App\Models\Evento $record */
-                            // Só exclui definitivamente os que já estão cancelados (soft deleted)
-                            if (! $record->trashed()) {
-                                continue;
-                            }
+                        ->label('Cancelar selecionados')
+                        ->icon('heroicon-o-x-circle')
+                        ->color('danger')
+                        ->requiresConfirmation()
+                        ->modalHeading('Cancelar agendamentos selecionados?')
+                        ->modalDescription('O cancelamento preserva o histórico e pode ser restaurado.')
+                        ->action(function (Collection $records): void {
+                            $userId = Auth::id();
 
-                            $record->forceDelete();
-                        }
-                    }),
+                            foreach ($records as $record) {
+                                /** @var \App\Models\Evento $record */
+                                if ($record->trashed()) {
+                                    continue;
+                                }
+
+                                $record->forceFill([
+                                    'updated_by' => $userId,
+                                    'deleted_by' => $userId,
+                                ])->save();
+
+                                $record->delete(); // soft delete
+                            }
+                        }),
+
+                    BulkAction::make('excluir_definitivo_selecionados')
+                        ->label('Excluir definitivo selecionados')
+                        ->icon('heroicon-o-trash')
+                        ->color('danger')
+                        ->requiresConfirmation()
+                        ->modalHeading('Excluir definitivamente os agendamentos selecionados?')
+                        ->modalDescription('⚠️ Esta ação é irreversível.')
+                        ->action(function (Collection $records): void {
+                            foreach ($records as $record) {
+                                /** @var \App\Models\Evento $record */
+                                if (! $record->trashed()) {
+                                    continue;
+                                }
+
+                                $record->forceDelete();
+                            }
+                        }),
 
                     BulkAction::make('restaurar_selecionados')
                         ->label('Restaurar selecionados')
