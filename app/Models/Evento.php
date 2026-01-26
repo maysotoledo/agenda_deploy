@@ -15,6 +15,8 @@ class Evento extends Model
         'starts_at',
         'ends_at',
         'titulo',
+        'whatsapp',
+        'oitiva_online',
         'intimado',
         'numero_procedimento',
 
