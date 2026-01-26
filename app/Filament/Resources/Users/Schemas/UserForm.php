@@ -20,9 +20,19 @@ class UserForm
                     ->email()
                     ->required(),
                // DateTimePicker::make('email_verified_at'),
+                //TextInput::make('password')
+                //    ->password()
+                //    ->required(),
                 TextInput::make('password')
+                    ->label('Senha')
                     ->password()
-                    ->required(),
+                    ->revealable()
+                    ->dehydrateStateUsing(fn ($state) => filled($state) ? $state : null)
+                    ->dehydrated(fn ($state) => filled($state)) // só manda pro save se tiver valor
+                    ->required(fn (string $operation) => $operation === 'create')
+                    ->minLength(8)
+                    ->autocomplete('new-password')
+                    ->helperText('Deixe em branco para manter a senha atual.'),
                 Select::make('roles')
                     ->relationship('roles', 'name')
                     ->multiple()
