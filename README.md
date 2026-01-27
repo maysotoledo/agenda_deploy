@@ -15,11 +15,18 @@ Este projeto implementa uma **Agenda por EPC** com:
 
 ## Requisitos
 
-- PHP 8.2+
+- PHP 8.4+
 - Composer
 - Banco de dados (MySQL/Postgres/etc)
 
 ---
+
+# Clonar do git
+git clone 
+composer install
+npm install
+npm run build
+
 
 ## 1) Criar projeto Laravel
 
