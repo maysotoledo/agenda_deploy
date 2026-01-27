@@ -22,11 +22,13 @@ Este projeto implementa uma **Agenda por EPC** com:
 ---
 
 # Clonar do git
-git clone 
+```bash
+
+git clone https://github.com/maysotoledo/agenda_deploy
 composer install
 npm install
 npm run build
-
+```
 
 ## 1) Criar projeto Laravel
 
