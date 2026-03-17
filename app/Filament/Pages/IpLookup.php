@@ -85,7 +85,7 @@ class IpLookup extends Page implements HasSchemas
                 return;
             }
 
-            $empresa = trim(($json['isp'] ?? '') . (($json['org'] ?? '') ? ' / ' . $json['org'] : ''));
+            $empresa = trim(($json['isp'] ?? ''));
             $tipoConexao = ($json['mobile'] ?? false) ? 'Móvel' : 'Residencial';
 
             $this->result = [

@@ -11,18 +11,15 @@
         <x-filament::section class="mt-6" heading="Resultado">
             <dl class="grid grid-cols-1 gap-4 md:grid-cols-3">
                 <div>
-                    <dt class="text-sm text-gray-500">Cidade</dt>
-                    <dd class="text-base font-medium">{{ $result['city'] }}</dd>
+                    <dt class="text-sm text-gray-500"><b>Cidade:</b> {{ $result['city'] }}</dt>
                 </div>
 
                 <div>
-                    <dt class="text-sm text-gray-500">Empresa (ISP/Org)</dt>
-                    <dd class="text-base font-medium">{{ $result['company'] }}</dd>
+                    <dt class="text-sm text-gray-500"><b>Empresa:</b> {{ $result['company'] }}</dt>
                 </div>
 
                 <div>
-                    <dt class="text-sm text-gray-500">Tipo de conexão</dt>
-                    <dd class="text-base font-medium">{{ $result['connection_type'] }}</dd>
+                    <dt class="text-sm text-gray-500"><b>Tipo de conexão:</b> {{ $result['connection_type'] }}</dt>
                 </div>
             </dl>
         </x-filament::section>
