@@ -9,11 +9,17 @@ use Illuminate\Support\Facades\Http;
 
 class RunStepper
 {
-    public function step(AnaliseRun $run, int $chunk = 15): int
+    /**
+     * Processa um lote de IPs por "tick" (poll),
+     * respeitando um budget de tempo para não estourar 30s.
+     */
+    public function step(AnaliseRun $run, int $chunk = 5, float $maxSeconds = 1.5): int
     {
         if ($run->status !== 'running') {
             return 0;
         }
+
+        $start = microtime(true);
 
         $rows = AnaliseRunIp::query()
             ->where('analise_run_id', $run->id)
@@ -23,22 +29,21 @@ class RunStepper
             ->get();
 
         if ($rows->isEmpty()) {
-            $pending = AnaliseRunIp::where('analise_run_id', $run->id)->where('enriched', false)->exists();
-            if (! $pending) {
-                $run->status = 'done';
-                $run->progress = 100;
-                $run->processed_unique_ips = $run->total_unique_ips;
-                $run->save();
-            }
+            $this->finalizeIfDone($run);
             return 0;
         }
 
         $processedThisStep = 0;
 
         foreach ($rows as $row) {
+            // ⏱️ respeita budget de tempo por tick
+            if ((microtime(true) - $start) >= $maxSeconds) {
+                break;
+            }
+
             $ip = $row->ip;
 
-            // IP privado/reservado => grava fail sem chamar ip-api
+            // IP privado/reservado => grava fail e marca enriched
             if ($this->isPrivateOrReservedIp($ip)) {
                 IpEnrichment::updateOrCreate(
                     ['ip' => $ip],
@@ -62,7 +67,7 @@ class RunStepper
                 continue;
             }
 
-            // Reaproveita enrichment global se for recente
+            // Reaproveita enrichment recente (30 dias)
             $existing = IpEnrichment::where('ip', $ip)->first();
             if ($existing && $existing->fetched_at && $existing->fetched_at->gt(now()->subDays(30))) {
                 $row->enriched = true;
@@ -71,10 +76,11 @@ class RunStepper
                 continue;
             }
 
-            // Busca na ip-api e grava SEMPRE (success ou fail)
+            // HTTP: timeout curto para não travar o request do Livewire
             try {
-                $resp = Http::timeout(3)
-                    ->retry(1, 200)
+                $resp = Http::timeout(2)   // ✅ curto
+                    ->connectTimeout(1)    // ✅ curto
+                    ->retry(0, 0)          // ✅ sem retry (não estourar tempo)
                     ->get("http://ip-api.com/json/{$ip}", [
                         'fields' => 'status,message,query,city,isp,org,mobile',
                     ]);
@@ -109,11 +115,12 @@ class RunStepper
                     );
                 }
             } catch (\Throwable $e) {
+                // Sempre grava fail (para não ficar pendente infinito)
                 IpEnrichment::updateOrCreate(
                     ['ip' => $ip],
                     [
                         'status' => 'fail',
-                        'message' => $e->getMessage(),
+                        'message' => 'exception:' . mb_substr($e->getMessage(), 0, 180),
                         'city' => null,
                         'isp' => null,
                         'org' => null,
@@ -123,7 +130,7 @@ class RunStepper
                 );
             }
 
-            // ✅ só marca enriched se existir enrichment
+            // ✅ Só marca enriched se o enrichment existe
             if (IpEnrichment::where('ip', $ip)->exists()) {
                 $row->enriched = true;
                 $row->save();
@@ -131,6 +138,7 @@ class RunStepper
             }
         }
 
+        // Atualiza progresso pelo banco (estado real)
         $doneCount = AnaliseRunIp::where('analise_run_id', $run->id)->where('enriched', true)->count();
         $run->processed_unique_ips = $doneCount;
 
@@ -138,16 +146,22 @@ class RunStepper
             ? (int) floor(($doneCount / $run->total_unique_ips) * 100)
             : 100;
 
+        $this->finalizeIfDone($run);
+
+        $run->save();
+
+        return $processedThisStep;
+    }
+
+    private function finalizeIfDone(AnaliseRun $run): void
+    {
         $pending = AnaliseRunIp::where('analise_run_id', $run->id)->where('enriched', false)->exists();
+
         if (! $pending) {
             $run->status = 'done';
             $run->progress = 100;
             $run->processed_unique_ips = $run->total_unique_ips;
         }
-
-        $run->save();
-
-        return $processedThisStep;
     }
 
     private function isPrivateOrReservedIp(string $ip): bool

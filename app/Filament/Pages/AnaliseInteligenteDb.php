@@ -41,7 +41,7 @@ class AnaliseInteligenteDb extends Page implements HasSchemas
     public ?array $report = null;
 
     /** quantos IPs enriquece por “tick” do poll */
-    public int $chunkSize = 15;
+    public int $chunkSize = 5;
 
     /** aba ativa (botões) */
     public string $tab = 'timeline';
@@ -188,8 +188,7 @@ class AnaliseInteligenteDb extends Page implements HasSchemas
 
         if ($run->status === 'running') {
             // processa mais um “lote”
-            app(RunStepper::class)->step($run, $this->chunkSize);
-
+            app(RunStepper::class)->step($run, $this->chunkSize, 1.5);
             $run->refresh();
             $this->progress = (int) $run->progress;
             $this->running = ($run->status === 'running');
