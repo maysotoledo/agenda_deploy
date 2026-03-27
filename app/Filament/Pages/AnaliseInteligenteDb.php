@@ -25,12 +25,22 @@ class AnaliseInteligenteDb extends Page implements HasSchemas
     use InteractsWithSchemas;
 
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-document-text';
-    protected static ?string $navigationLabel = 'Análise Inteligente Whatsapp';
-    protected static ?string $title = 'Análise Inteligente Whatsapp';
-    protected static ?string $slug = 'analise-inteligente-db';
+    protected static ?string $navigationLabel = 'Análise log Whatsapp';
+    protected static ?string $title = 'Análise log Whatsapp';
+    protected static ?string $slug = 'analise-log-wpp';
 
     // ✅ a view que contém o upload + botões + planilhas
     protected string $view = 'filament.pages.analise-inteligente-db-planilhas';
+
+    public static function getNavigationIcon(): string|\BackedEnum|null
+    {
+        return 'heroicon-o-calendar-days';
+    }
+
+    public static function getNavigationGroup(): string|\UnitEnum|null
+    {
+        return 'Investigação Telemática';
+    }
 
     public ?array $data = [];
 

@@ -23,6 +23,16 @@ class IpLookup extends Page implements HasSchemas
 
     protected string $view = 'filament.pages.ip-lookup';
 
+    public static function getNavigationIcon(): string|\BackedEnum|null
+    {
+        return 'heroicon-o-calendar-days';
+    }
+
+    public static function getNavigationGroup(): string|\UnitEnum|null
+    {
+        return 'Investigação Telemática';
+    }
+
     public ?array $data = [];
     public ?array $result = null;
 

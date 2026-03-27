@@ -15,6 +15,16 @@ class RelatoriosProcessados extends Page
 
     protected string $view = 'filament.pages.relatorios-processados';
 
+       public static function getNavigationIcon(): string|\BackedEnum|null
+    {
+        return 'heroicon-o-calendar-days';
+    }
+
+    public static function getNavigationGroup(): string|\UnitEnum|null
+    {
+        return 'Investigação Telemática';
+    }
+
     public string $statusFilter = 'done'; // done|running|error|all
 
     public function getRunsProperty()
