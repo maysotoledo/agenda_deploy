@@ -18,10 +18,14 @@ use Filament\Schemas\Schema;
 use Filament\Support\Enums\Width;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use BezhanSalleh\FilamentShield\Traits\HasPageShield;
+
 
 class AnaliseInteligenteWPP extends Page implements HasSchemas
 {
     use InteractsWithSchemas;
+    use HasPageShield;
+
 
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-document-text';
     protected static ?string $navigationLabel = 'Análise log WHATSAPP';
@@ -50,7 +54,10 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
     {
         return 'Investigação Telemática';
     }
-
+    public static function getNavigationSort(): ?int
+    {
+        return 2;
+    }
     public function mount(): void
     {
         $this->form->fill();

@@ -35,6 +35,7 @@ class IpLookup extends Page implements HasSchemas
     {
         return 'Investigação Telemática';
     }
+  
 
     public ?array $data = [];
     public ?array $result = null;

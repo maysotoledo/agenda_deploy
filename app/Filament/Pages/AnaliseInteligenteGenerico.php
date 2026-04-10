@@ -16,10 +16,14 @@ use Filament\Schemas\Contracts\HasSchemas;
 use Filament\Schemas\Schema;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use BezhanSalleh\FilamentShield\Traits\HasPageShield;
+
 
 class AnaliseInteligenteGenerico extends Page implements HasSchemas
 {
     use InteractsWithSchemas;
+    use HasPageShield;
+
 
     protected static ?string $navigationLabel = 'Análise log GENÉRICO';
     protected static ?string $title = 'Análise de log genérico';
@@ -41,7 +45,10 @@ class AnaliseInteligenteGenerico extends Page implements HasSchemas
     {
         return 'Investigação Telemática';
     }
-
+    public static function getNavigationSort(): ?int
+    {
+        return 1;
+    }
     public function mount(): void
     {
         $this->form->fill();

@@ -33,6 +33,10 @@ class RelatoriosProcessados extends Page implements HasTable
     {
         return 'Investigação Telemática';
     }
+        public static function getNavigationSort(): ?int
+    {
+        return 4;
+    }
 
     public function table(Table $table): Table
     {

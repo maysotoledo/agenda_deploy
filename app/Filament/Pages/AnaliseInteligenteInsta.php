@@ -47,7 +47,10 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
     {
         return 'Investigação Telemática';
     }
-
+    public static function getNavigationSort(): ?int
+    {
+        return 3;
+    }
     public function mount(): void
     {
         $this->form->fill();
