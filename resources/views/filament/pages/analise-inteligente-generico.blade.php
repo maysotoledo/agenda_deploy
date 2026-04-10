@@ -1,10 +1,18 @@
 <x-filament-panels::page>
-    <form wire:submit="gerar" class="space-y-6">
+    <form wire:submit="gerar" class="space-y-6" wire:loading.class="opacity-75" wire:target="gerar">
         {{ $this->form }}
 
         <div class="flex flex-wrap gap-3">
-            <x-filament::button type="submit">Gerar relatório</x-filament::button>
-            <x-filament::button type="button" color="gray" wire:click="limpar">Limpar</x-filament::button>
+            <x-filament::button type="submit" wire:loading.attr="disabled" wire:target="gerar" :disabled="$running">
+                <span wire:loading.remove wire:target="gerar">
+                    {{ $running ? 'Processando...' : 'Gerar relatório' }}
+                </span>
+                <span wire:loading wire:target="gerar">Gerando...</span>
+            </x-filament::button>
+
+            <x-filament::button type="button" color="gray" wire:click="limpar" wire:loading.attr="disabled" wire:target="limpar,gerar" :disabled="$running">
+                Limpar
+            </x-filament::button>
         </div>
     </form>
 
@@ -27,13 +35,54 @@
     @endif
 
     @if ($report)
+        <x-filament::section class="mt-6" heading="Resumo da Análise">
+            <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                <div class="rounded-xl border p-4">
+                    <div class="text-sm text-gray-500">Período (GMT-3)</div>
+                    <div class="font-semibold">{{ $report['period_label'] ?? '-' }}</div>
+                </div>
+
+                <div class="rounded-xl border p-4">
+                    <div class="text-sm text-gray-500">Total de eventos</div>
+                    <div class="font-semibold">{{ number_format($report['total_events'] ?? 0, 0, ',', '.') }}</div>
+                </div>
+
+                <div class="rounded-xl border p-4">
+                    <div class="text-sm text-gray-500">IPs únicos</div>
+                    <div class="font-semibold">{{ number_format($report['total_unique_ips'] ?? 0, 0, ',', '.') }}</div>
+                </div>
+
+                <div class="rounded-xl border p-4 md:col-span-2 xl:col-span-3">
+                    <div class="text-sm text-gray-500">Emails encontrados</div>
+                    <div class="font-semibold break-all">
+                        @if(!empty($report['emails_found']))
+                            {{ implode(', ', $report['emails_found']) }}
+                        @else
+                            -
+                        @endif
+                    </div>
+                </div>
+
+                <div class="rounded-xl border p-4 md:col-span-2 xl:col-span-3">
+                    <div class="text-sm text-gray-500">Achados sugestivos</div>
+                    <ul class="mt-2 list-disc pl-5 space-y-1 text-sm text-gray-700">
+                        @forelse(($report['investigation_hints'] ?? []) as $hint)
+                            <li>{{ $hint }}</li>
+                        @empty
+                            <li>Nenhum achado automático.</li>
+                        @endforelse
+                    </ul>
+                </div>
+            </div>
+        </x-filament::section>
+
         @php
             $tabs = [
                 'timeline' => ['label' => 'Timeline', 'icon' => 'heroicon-o-clock'],
                 'unique_ips' => ['label' => 'IPs Únicos', 'icon' => 'heroicon-o-globe-alt'],
                 'providers' => ['label' => 'Provedores', 'icon' => 'heroicon-o-building-office-2'],
                 'cities' => ['label' => 'Cidades', 'icon' => 'heroicon-o-map-pin'],
-                'residencial' => ['label' => 'Residencial (23–06)', 'icon' => 'heroicon-o-home'],
+                'residencial' => ['label' => 'Noturno (23–06)', 'icon' => 'heroicon-o-moon'],
                 'movel' => ['label' => 'Móvel', 'icon' => 'heroicon-o-device-phone-mobile'],
             ];
 
@@ -42,8 +91,8 @@
                 'unique_ips' => count($report['unique_ip_rows'] ?? []),
                 'providers' => count($report['provider_stats_rows'] ?? []),
                 'cities' => count($report['city_stats_rows'] ?? []),
-                'residencial' => count($report['fixed_night_top'] ?? []),
-                'movel' => count($report['mobile_top'] ?? []),
+                'residencial' => (int) ($report['night_total_events'] ?? 0),
+                'movel' => (int) ($report['mobile_total_events'] ?? 0),
             ];
         @endphp
 
@@ -74,63 +123,62 @@
                     @endforeach
                 </div>
             </div>
-
-            <div class="mt-2 text-xs text-gray-500">
-                Dica: Timeline → IPs Únicos → Provedores → Cidades.
-            </div>
         </x-filament::section>
 
         <div class="mt-6 space-y-6">
             @if ($tab === 'timeline')
                 <x-filament::section heading="Timeline (Eventos)">
-                    <livewire:analise-inteligente.timeline-table
+                    <livewire:analise-inteligente.generic-timeline-table
                         :rows="$report['timeline_rows'] ?? []"
-                        :wire:key="'timeline-' . $runId"
+                        :wire:key="'gen-timeline-' . $runId"
                     />
                 </x-filament::section>
             @endif
 
             @if ($tab === 'unique_ips')
                 <x-filament::section heading="IPs Únicos (Relevância)">
-                    <livewire:analise-inteligente.unique-ips-table
+                    <livewire:analise-inteligente.generic-unique-ips-table
                         :rows="$report['unique_ip_rows'] ?? []"
-                        :wire:key="'unique-' . $runId"
+                        :wire:key="'gen-unique-' . $runId"
                     />
                 </x-filament::section>
             @endif
 
             @if ($tab === 'providers')
                 <x-filament::section heading="Provedores (Métricas)">
-                    <livewire:analise-inteligente.providers-stats-table
+                    <livewire:analise-inteligente.generic-providers-table
                         :rows="$report['provider_stats_rows'] ?? []"
-                        :wire:key="'providers-' . $runId"
+                        :wire:key="'gen-providers-' . $runId"
                     />
                 </x-filament::section>
             @endif
 
             @if ($tab === 'cities')
                 <x-filament::section heading="Cidades (Concentração)">
-                    <livewire:analise-inteligente.cities-stats-table
+                    <livewire:analise-inteligente.generic-cities-table
                         :rows="$report['city_stats_rows'] ?? []"
-                        :wire:key="'cities-' . $runId"
+                        :wire:key="'gen-cities-' . $runId"
                     />
                 </x-filament::section>
             @endif
 
             @if ($tab === 'residencial')
-                <x-filament::section heading="Residencial (23–06)">
-                    @include('filament.pages.partials.sheet-residencial', ['report' => $report])
+                <x-filament::section heading="Noturno (23–06)">
+                    <livewire:analise-inteligente.generic-timeline-table
+                        :rows="$report['night_events_rows'] ?? []"
+                        :wire:key="'gen-night-' . $runId"
+                    />
                 </x-filament::section>
             @endif
 
             @if ($tab === 'movel')
                 <x-filament::section heading="Móvel">
-                    @include('filament.pages.partials.sheet-movel', ['report' => $report])
+                    <livewire:analise-inteligente.generic-timeline-table
+                        :rows="$report['mobile_events_rows'] ?? []"
+                        :wire:key="'gen-mobile-' . $runId"
+                    />
                 </x-filament::section>
             @endif
         </div>
     @endif
-
-    <x-filament-actions::modals />
-    {{ $this->providerIpsModal() }}
 </x-filament-panels::page>

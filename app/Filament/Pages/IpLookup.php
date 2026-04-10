@@ -9,10 +9,13 @@ use Filament\Schemas\Concerns\InteractsWithSchemas;
 use Filament\Schemas\Contracts\HasSchemas;
 use Filament\Schemas\Schema;
 use Illuminate\Support\Facades\Http;
+use BezhanSalleh\FilamentShield\Traits\HasPageShield;
+
 
 class IpLookup extends Page implements HasSchemas
 {
     use InteractsWithSchemas;
+    use HasPageShield;
 
     // ✅ Filament 4 tipa como BackedEnum|string|null
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-globe-alt';

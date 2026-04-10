@@ -29,10 +29,10 @@ class ProvidersStatsTable extends TableComponent
 
                 TextColumn::make('occurrences')->label('Ocorrências')->numeric()->sortable(),
                 TextColumn::make('unique_ips')->label('IPs únicos')->numeric()->sortable(),
-                TextColumn::make('cities')->label('Cidades')->numeric()->sortable(),
-                TextColumn::make('mobile_occurrences')->label('Ocorr. móveis')->numeric()->sortable(),
-                TextColumn::make('mobile_percent')->label('% móvel')->suffix('%')->numeric()->sortable(),
-                TextColumn::make('last_seen')->label('Última vez visto')->sortable(),
+                //TextColumn::make('cities')->label('Cidades')->numeric()->sortable(),
+                //TextColumn::make('mobile_occurrences')->label('Ocorr. móveis')->numeric()->sortable(),
+                //TextColumn::make('mobile_percent')->label('% móvel')->suffix('%')->numeric()->sortable(),
+                TextColumn::make('last_seen')->label('Último acesso')->sortable(),
             ])
             ->defaultSort('occurrences', 'desc')
             ->paginated([25, 50, 100])

@@ -5,9 +5,13 @@ namespace App\Filament\Pages;
 use App\Filament\Widgets\CalendarWidget;
 use App\Filament\Widgets\SelecionarUsuarioAgendaWidget;
 use Filament\Pages\Page;
+use BezhanSalleh\FilamentShield\Traits\HasPageShield;
+
 
 class AgendaCalendario extends Page
 {
+    use HasPageShield;
+    
     // ✅ Na sua versão do Filament, $view é NÃO-static
     protected string $view = 'filament.pages.agenda-calendario';
 

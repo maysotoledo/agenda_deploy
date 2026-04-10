@@ -23,7 +23,7 @@
                 'unique_ips' => ['label' => 'IPs Únicos', 'icon' => 'heroicon-o-globe-alt'],
                 'providers' => ['label' => 'Provedores', 'icon' => 'heroicon-o-building-office-2'],
                 'cities' => ['label' => 'Cidades', 'icon' => 'heroicon-o-map-pin'],
-                'residencial' => ['label' => 'Residencial (23–06)', 'icon' => 'heroicon-o-home'],
+                'residencial' => ['label' => 'Noturno (23–06)', 'icon' => 'heroicon-o-moon'],
                 'movel' => ['label' => 'Móvel', 'icon' => 'heroicon-o-device-phone-mobile'],
             ];
 
@@ -32,7 +32,7 @@
                 'unique_ips' => count($report['unique_ip_rows'] ?? []),
                 'providers' => count($report['provider_stats_rows'] ?? []),
                 'cities' => count($report['city_stats_rows'] ?? []),
-                'residencial' => count($report['fixed_night_top'] ?? []),
+                'residencial' => (int) ($report['night_total_events'] ?? 0),
                 'movel' => count($report['mobile_top'] ?? []),
             ];
         @endphp
@@ -104,9 +104,8 @@
             @endif
 
             @if ($tab === 'residencial')
-                <x-filament::section heading="Residencial (23–06)">
-                    @include('filament.pages.partials.sheet-residencial', ['report' => $report])
-                </x-filament::section>
+                {{-- ✅ Noturno com visual igual Timeline --}}
+                @include('filament.pages.partials.sheet-residencial', ['report' => $report])
             @endif
 
             @if ($tab === 'movel')
@@ -116,7 +115,4 @@
             @endif
         </div>
     @endif
-
-    <x-filament-actions::modals />
-    {{ $this->providerIpsModal() }}
 </x-filament-panels::page>

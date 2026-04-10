@@ -1,65 +1,21 @@
 <div class="space-y-6">
+
     <div>
-        <div class="text-sm text-gray-500 mb-2">Ranking noturno (23–06) - conexões fixas</div>
-
-        <div class="overflow-auto">
-            <table class="min-w-full text-sm">
-                <thead class="bg-gray-50">
-                    <tr>
-                        <th class="text-left p-2 w-12">#</th>
-                        <th class="text-left p-2">Provedor</th>
-                        <th class="text-right p-2 w-40">Noturnos</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @foreach(($report['fixed_night_top'] ?? []) as $i => $row)
-                        <tr class="border-b">
-                            <td class="p-2">{{ $i + 1 }}</td>
-                            <td class="p-2">{{ $row['name'] ?? '-' }}</td>
-                            <td class="p-2 text-right tabular-nums">
-                                {{ number_format($row['count'] ?? 0, 0, ',', '.') }}
-                            </td>
-                        </tr>
-                    @endforeach
-
-                    @if (empty($report['fixed_night_top']))
-                        <tr>
-                            <td colspan="3" class="p-3 text-gray-500">Sem dados.</td>
-                        </tr>
-                    @endif
-                </tbody>
-            </table>
+        <div class="text-sm text-gray-500 mb-2">
+            Total de eventos noturnos:
+            <span class="font-semibold">
+                {{ number_format($report['night_total_events'] ?? 0, 0, ',', '.') }}
+            </span>
         </div>
     </div>
 
     <div>
-        <div class="text-sm text-gray-500 mb-2">IPs mais recentes — {{ $report['fixed_recent_provider'] ?? '-' }}</div>
-
-        <div class="overflow-auto">
-            <table class="min-w-full text-sm">
-                <thead class="bg-gray-50">
-                    <tr>
-                        <th class="text-left p-2 w-44">IP</th>
-                        <th class="text-left p-2 w-44">Data/Hora</th>
-                        <th class="text-left p-2 w-24">TZ</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @foreach(($report['fixed_recent_ips'] ?? []) as $row)
-                        <tr class="border-b">
-                            <td class="p-2 font-mono">{{ $row['ip'] ?? '-' }}</td>
-                            <td class="p-2 tabular-nums">{{ $row['datetime'] ?? '-' }}</td>
-                            <td class="p-2">{{ $row['tz'] ?? '-' }}</td>
-                        </tr>
-                    @endforeach
-
-                    @if (empty($report['fixed_recent_ips']))
-                        <tr>
-                            <td colspan="3" class="p-3 text-gray-500">Sem dados.</td>
-                        </tr>
-                    @endif
-                </tbody>
-            </table>
+        <div class="text-sm text-gray-500 mb-2">
         </div>
+
+        <livewire:analise-inteligente.night-events-table
+            :rows="$report['night_events_rows'] ?? []"
+        />
     </div>
+
 </div>

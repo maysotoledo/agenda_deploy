@@ -5,9 +5,9 @@ namespace App\Filament\Pages;
 use App\Models\AnaliseRun;
 use App\Models\AnaliseRunIp;
 use App\Models\IpEnrichment;
-use App\Services\AnaliseInteligente\RecordsHtmlParser;
-use App\Services\AnaliseInteligente\ReportAggregator;
 use App\Services\AnaliseInteligente\RunStepper;
+use App\Services\AnaliseInteligente\Whatsapp\RecordsHtmlParser;
+use App\Services\AnaliseInteligente\Whatsapp\ReportAggregator;
 use Filament\Actions\Action;
 use Filament\Forms\Components\FileUpload;
 use Filament\Notifications\Notification;
@@ -18,19 +18,28 @@ use Filament\Schemas\Schema;
 use Filament\Support\Enums\Width;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
-use Livewire\Attributes\On;
 
-class AnaliseInteligenteDb extends Page implements HasSchemas
+class AnaliseInteligenteWPP extends Page implements HasSchemas
 {
     use InteractsWithSchemas;
 
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-document-text';
-    protected static ?string $navigationLabel = 'Análise log Whatsapp';
-    protected static ?string $title = 'Análise log Whatsapp';
-    protected static ?string $slug = 'analise-log-wpp';
+    protected static ?string $navigationLabel = 'Análise log WHATSAPP';
+    protected static ?string $title = 'Análise de log do WHATSAPP';
+    protected static ?string $slug = 'analise-inteligente-wpp';
 
-    // ✅ a view que contém o upload + botões + planilhas
-    protected string $view = 'filament.pages.analise-inteligente-db-planilhas';
+    protected string $view = 'filament.pages.analise-inteligente-wpp-planilhas';
+
+    public ?array $data = [];
+    public ?int $runId = null;
+    public int $progress = 0;
+    public bool $running = false;
+    public ?array $report = null;
+    public int $chunkSize = 5;
+    public string $tab = 'timeline';
+
+    public ?string $selectedContactType = null;
+    public array $selectedContacts = [];
 
     public static function getNavigationIcon(): string|\BackedEnum|null
     {
@@ -42,27 +51,15 @@ class AnaliseInteligenteDb extends Page implements HasSchemas
         return 'Investigação Telemática';
     }
 
-    public ?array $data = [];
-
-    public ?int $runId = null;
-    public int $progress = 0;
-    public bool $running = false;
-
-    public ?array $report = null;
-
-    /** quantos IPs enriquece por “tick” do poll */
-    public int $chunkSize = 5;
-
-    /** aba ativa (botões) */
-    public string $tab = 'timeline';
-
-    /** modal provedor */
-    public ?string $selectedProvider = null;
-    public array $selectedProviderIps = [];
-
     public function mount(): void
     {
         $this->form->fill();
+
+        $runId = request()->integer('run');
+
+        if ($runId) {
+            $this->loadExistingRun($runId);
+        }
     }
 
     public function form(Schema $schema): Schema
@@ -83,17 +80,19 @@ class AnaliseInteligenteDb extends Page implements HasSchemas
 
     public function gerar(): void
     {
-        // reset estado
+        if ($this->running) {
+            return;
+        }
+
         $this->report = null;
         $this->progress = 0;
-        $this->running = false;
         $this->tab = 'timeline';
-        $this->selectedProvider = null;
-        $this->selectedProviderIps = [];
+        $this->selectedContactType = null;
+        $this->selectedContacts = [];
 
         $state = $this->form->getState();
-
         $storedPath = $state['html_file'] ?? null;
+
         if (is_array($storedPath)) {
             $storedPath = $storedPath[0] ?? null;
         }
@@ -104,6 +103,7 @@ class AnaliseInteligenteDb extends Page implements HasSchemas
         }
 
         $html = file_get_contents(Storage::disk('public')->path($storedPath));
+
         if (! is_string($html) || trim($html) === '') {
             Notification::make()->title('HTML vazio ou inválido')->danger()->send();
             return;
@@ -111,17 +111,18 @@ class AnaliseInteligenteDb extends Page implements HasSchemas
 
         $parsed = (new RecordsHtmlParser())->parse($html);
 
-        // agrega IPs únicos e metadados (ocorrências + last seen)
         $ipsMap = [];
-        foreach (($parsed['ip_events'] ?? []) as $e) {
-            $ip = trim((string) ($e['ip'] ?? ''));
+
+        foreach (($parsed['ip_events'] ?? []) as $event) {
+            $ip = trim((string) ($event['ip'] ?? ''));
+
             if ($ip === '') {
                 continue;
             }
 
-            $time = $e['time_utc'] ?? null;
-
+            $time = $event['time_utc'] ?? null;
             $ts = null;
+
             if ($time instanceof \Carbon\Carbon) {
                 $ts = $time->timestamp;
             } elseif (is_string($time) && trim($time) !== '') {
@@ -149,7 +150,6 @@ class AnaliseInteligenteDb extends Page implements HasSchemas
             return;
         }
 
-        // cria run + filas de IPs
         $run = DB::transaction(function () use ($parsed, $ipsMap) {
             $run = AnaliseRun::create([
                 'uuid' => (string) str()->uuid(),
@@ -159,6 +159,7 @@ class AnaliseInteligenteDb extends Page implements HasSchemas
                 'progress' => 0,
                 'status' => 'running',
                 'report' => [
+                    '_source' => 'whatsapp',
                     '_parsed' => $parsed,
                 ],
             ]);
@@ -168,7 +169,9 @@ class AnaliseInteligenteDb extends Page implements HasSchemas
                     'analise_run_id' => $run->id,
                     'ip' => $ip,
                     'occurrences' => (int) $meta['occurrences'],
-                    'last_seen_at' => $meta['last_seen_ts'] ? now()->setTimestamp((int) $meta['last_seen_ts']) : null,
+                    'last_seen_at' => $meta['last_seen_ts']
+                        ? now()->setTimestamp((int) $meta['last_seen_ts'])
+                        : null,
                     'enriched' => false,
                 ]);
             }
@@ -184,11 +187,17 @@ class AnaliseInteligenteDb extends Page implements HasSchemas
 
     public function poll(): void
     {
+        // ✅ se o modal de contatos estiver aberto, não re-renderiza
+        if ($this->selectedContactType !== null) {
+            return;
+        }
+
         if (! $this->runId) {
             return;
         }
 
         $run = AnaliseRun::find($this->runId);
+
         if (! $run) {
             return;
         }
@@ -197,39 +206,15 @@ class AnaliseInteligenteDb extends Page implements HasSchemas
         $this->running = ($run->status === 'running');
 
         if ($run->status === 'running') {
-            // processa mais um “lote”
             app(RunStepper::class)->step($run, $this->chunkSize, 1.5);
+
             $run->refresh();
             $this->progress = (int) $run->progress;
             $this->running = ($run->status === 'running');
         }
 
-        // quando finalizar, monta o report (uma vez)
         if ($run->status === 'done' && $this->report === null) {
-            $parsed = $run->report['_parsed'] ?? null;
-
-            if (! is_array($parsed)) {
-                Notification::make()->title('Sem dados para montar relatório')->danger()->send();
-                return;
-            }
-
-            $ips = AnaliseRunIp::where('analise_run_id', $run->id)->pluck('ip')->all();
-            $enrs = IpEnrichment::whereIn('ip', $ips)->get()->keyBy('ip');
-
-            $enrichedByIp = [];
-            foreach ($ips as $ip) {
-                $e = $enrs->get($ip);
-
-                $enrichedByIp[$ip] = [
-                    'ip' => $ip,
-                    'city' => $e?->city,
-                    'isp' => $e?->isp,
-                    'org' => $e?->org,
-                    'mobile' => $e?->mobile,
-                ];
-            }
-
-            $this->report = (new ReportAggregator())->buildReport($parsed, $enrichedByIp);
+            $this->hydrateReportFromRun($run);
 
             Notification::make()->title('Relatório pronto')->success()->send();
         }
@@ -237,41 +222,95 @@ class AnaliseInteligenteDb extends Page implements HasSchemas
 
     public function limpar(): void
     {
+        if ($this->running) {
+            return;
+        }
+
         $this->runId = null;
         $this->progress = 0;
         $this->running = false;
         $this->report = null;
         $this->tab = 'timeline';
-
-        $this->selectedProvider = null;
-        $this->selectedProviderIps = [];
+        $this->selectedContactType = null;
+        $this->selectedContacts = [];
 
         $this->form->fill();
     }
 
-    #[On('open-provider-from-table')]
-    public function openProviderFromTable(string $provider): void
+    protected function loadExistingRun(int $runId): void
     {
-        $this->openProvider($provider);
+        $run = AnaliseRun::find($runId);
+
+        if (! $run) {
+            Notification::make()->title('Relatório processado não encontrado')->danger()->send();
+            return;
+        }
+
+        $this->runId = $run->id;
+        $this->progress = (int) $run->progress;
+        $this->running = ($run->status === 'running');
+
+        if ($run->status === 'done') {
+            $this->hydrateReportFromRun($run);
+        }
     }
 
-    public function openProvider(string $provider): void
+    protected function hydrateReportFromRun(AnaliseRun $run): void
     {
-        $this->selectedProvider = $provider;
-        $this->selectedProviderIps = $this->report['provider_ip_map'][$provider] ?? [];
-        $this->mountAction('providerIpsModal');
+        $parsed = $run->report['_parsed'] ?? null;
+
+        if (! is_array($parsed)) {
+            Notification::make()->title('Sem dados para montar relatório')->danger()->send();
+            return;
+        }
+
+        $ips = AnaliseRunIp::where('analise_run_id', $run->id)->pluck('ip')->all();
+        $enrs = IpEnrichment::whereIn('ip', $ips)->get()->keyBy('ip');
+
+        $enrichedByIp = [];
+
+        foreach ($ips as $ip) {
+            $enrichment = $enrs->get($ip);
+
+            $enrichedByIp[$ip] = [
+                'ip' => $ip,
+                'city' => $enrichment?->city,
+                'isp' => $enrichment?->isp,
+                'org' => $enrichment?->org,
+                'mobile' => $enrichment?->mobile,
+            ];
+        }
+
+        $this->report = (new ReportAggregator())->buildReport($parsed, $enrichedByIp);
     }
 
-    public function providerIpsModal(): Action
+    public function openContactsModal(string $type): void
     {
-        return Action::make('providerIpsModal')
-            ->label('IPs do Provedor')
-            ->modalHeading(fn () => 'IPs do provedor: ' . ($this->selectedProvider ?? ''))
-            ->modalWidth(Width::SevenExtraLarge)
+        $this->selectedContactType = $type;
+
+        if ($type === 'simetricos') {
+            $this->selectedContacts = $this->report['symmetric_contacts'] ?? [];
+        } else {
+            $this->selectedContacts = $this->report['asymmetric_contacts'] ?? [];
+        }
+
+        $this->mountAction('contactsModal');
+    }
+
+    public function contactsModal(): Action
+    {
+        return Action::make('contactsModal')
+            ->label('Contatos')
+            ->modalHeading(function () {
+                return ($this->selectedContactType === 'simetricos')
+                    ? 'Contatos Simétricos'
+                    : 'Contatos Assimétricos';
+            })
+            ->modalWidth(Width::FiveExtraLarge)
             ->modalSubmitAction(false)
             ->modalCancelActionLabel('Fechar')
-            ->modalContent(fn () => view('filament.pages.partials.modal-provider-ips', [
-                'rows' => $this->selectedProviderIps,
+            ->modalContent(fn () => view('filament.pages.partials.modal-contacts', [
+                'contacts' => $this->selectedContacts,
             ]));
     }
 }

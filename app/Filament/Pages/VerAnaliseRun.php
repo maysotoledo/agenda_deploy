@@ -6,10 +6,7 @@ use App\Models\AnaliseRun;
 use App\Models\AnaliseRunIp;
 use App\Models\IpEnrichment;
 use App\Services\AnaliseInteligente\ReportAggregator;
-use Filament\Actions\Action;
 use Filament\Pages\Page;
-use Filament\Support\Enums\Width;
-use Livewire\Attributes\On;
 
 class VerAnaliseRun extends Page
 {
@@ -26,13 +23,11 @@ class VerAnaliseRun extends Page
 
     public string $tab = 'timeline';
 
-    public ?string $selectedProvider = null;
-    public array $selectedProviderIps = [];
-
     public function mount(string|int $run): void
     {
         $this->runModel = AnaliseRun::findOrFail((int) $run);
         $this->tab = 'timeline';
+
         $this->loadReport();
     }
 
@@ -44,6 +39,7 @@ class VerAnaliseRun extends Page
             return;
         }
 
+        // mesmos enrichments usados na geração
         $ips = AnaliseRunIp::where('analise_run_id', $this->runModel->id)->pluck('ip')->all();
         $enrs = IpEnrichment::whereIn('ip', $ips)->get()->keyBy('ip');
 
@@ -59,32 +55,7 @@ class VerAnaliseRun extends Page
             ];
         }
 
+        // ✅ usa o MESMO aggregator (o completo)
         $this->report = (new ReportAggregator())->buildReport($parsed, $enrichedByIp);
-    }
-
-    #[On('open-provider-from-table')]
-    public function openProviderFromTable(string $provider): void
-    {
-        $this->openProvider($provider);
-    }
-
-    public function openProvider(string $provider): void
-    {
-        $this->selectedProvider = $provider;
-        $this->selectedProviderIps = $this->report['provider_ip_map'][$provider] ?? [];
-        $this->mountAction('providerIpsModal');
-    }
-
-    public function providerIpsModal(): Action
-    {
-        return Action::make('providerIpsModal')
-            ->label('IPs do Provedor')
-            ->modalHeading(fn () => 'IPs do provedor: ' . ($this->selectedProvider ?? ''))
-            ->modalWidth(Width::SevenExtraLarge)
-            ->modalSubmitAction(false)
-            ->modalCancelActionLabel('Fechar')
-            ->modalContent(fn () => view('filament.pages.partials.modal-provider-ips', [
-                'rows' => $this->selectedProviderIps,
-            ]));
     }
 }
