@@ -33,9 +33,9 @@ class IpLookup extends Page implements HasSchemas
 
     public static function getNavigationGroup(): string|\UnitEnum|null
     {
-        return 'Investigação Telemática';
+        return 'Análise Telemática';
     }
-  
+
 
     public ?array $data = [];
     public ?array $result = null;
