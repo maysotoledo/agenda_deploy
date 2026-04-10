@@ -12,9 +12,9 @@ class ProvidersStatsTable extends TableComponent
     public array $rows = [];
 
     public function openProvider(string $provider): void
-    {
-        $this->dispatch('open-provider-from-table', provider: $provider);
-    }
+{
+    $this->dispatch('open-provider-ips-modal', provider: $provider);
+}
 
     public function table(Table $table): Table
     {

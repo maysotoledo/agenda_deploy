@@ -8,6 +8,7 @@ use App\Models\IpEnrichment;
 use App\Services\AnaliseInteligente\RunStepper;
 use App\Services\AnaliseInteligente\Whatsapp\RecordsHtmlParser;
 use App\Services\AnaliseInteligente\Whatsapp\ReportAggregator;
+use BezhanSalleh\FilamentShield\Traits\HasPageShield;
 use Filament\Actions\Action;
 use Filament\Forms\Components\FileUpload;
 use Filament\Notifications\Notification;
@@ -18,14 +19,12 @@ use Filament\Schemas\Schema;
 use Filament\Support\Enums\Width;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
-use BezhanSalleh\FilamentShield\Traits\HasPageShield;
-
+use Livewire\Attributes\On;
 
 class AnaliseInteligenteWPP extends Page implements HasSchemas
 {
     use InteractsWithSchemas;
     use HasPageShield;
-
 
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-document-text';
     protected static ?string $navigationLabel = 'Análise log WHATSAPP';
@@ -45,6 +44,10 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
     public ?string $selectedContactType = null;
     public array $selectedContacts = [];
 
+    // ✅ NOVO: estado do modal de provedor (pra travar poll e montar o modal)
+    public ?string $selectedProvider = null;
+    public array $selectedProviderIps = [];
+
     public static function getNavigationIcon(): string|\BackedEnum|null
     {
         return 'heroicon-o-calendar-days';
@@ -54,10 +57,12 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
     {
         return 'Investigação Telemática';
     }
+
     public static function getNavigationSort(): ?int
     {
         return 2;
     }
+
     public function mount(): void
     {
         $this->form->fill();
@@ -96,6 +101,10 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
         $this->tab = 'timeline';
         $this->selectedContactType = null;
         $this->selectedContacts = [];
+
+        // ✅ reset modal provedor
+        $this->selectedProvider = null;
+        $this->selectedProviderIps = [];
 
         $state = $this->form->getState();
         $storedPath = $state['html_file'] ?? null;
@@ -194,8 +203,12 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
 
     public function poll(): void
     {
-        // ✅ se o modal de contatos estiver aberto, não re-renderiza
+        // ✅ se algum modal estiver aberto, não re-renderiza (evita “matar” modal)
         if ($this->selectedContactType !== null) {
+            return;
+        }
+
+        if ($this->selectedProvider !== null) {
             return;
         }
 
@@ -240,6 +253,10 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
         $this->tab = 'timeline';
         $this->selectedContactType = null;
         $this->selectedContacts = [];
+
+        // ✅ reset modal provedor
+        $this->selectedProvider = null;
+        $this->selectedProviderIps = [];
 
         $this->form->fill();
     }
@@ -319,5 +336,40 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
             ->modalContent(fn () => view('filament.pages.partials.modal-contacts', [
                 'contacts' => $this->selectedContacts,
             ]));
+    }
+
+    // ✅ NOVO: escuta o evento disparado pela tabela de provedores
+    #[On('open-provider-ips-modal')]
+    public function openProviderIpsModal(string $provider): void
+    {
+        $provider = trim($provider);
+
+        $this->selectedProvider = $provider !== '' ? $provider : 'Desconhecido';
+        $this->selectedProviderIps = $this->report['provider_ip_map'][$this->selectedProvider] ?? [];
+
+        $this->mountAction('providerIpsModal');
+    }
+
+    // ✅ NOVO: modal de IPs do provedor
+    public function providerIpsModal(): Action
+    {
+        return Action::make('providerIpsModal')
+            ->label('IPs do Provedor')
+            ->modalHeading(fn () => "IPs - {$this->selectedProvider}")
+            ->modalWidth(Width::FiveExtraLarge)
+            ->modalSubmitAction(false)
+            ->modalCancelActionLabel('Fechar')
+            ->after(fn () => $this->closeProviderModalState())
+            ->modalContent(fn () => view('filament.pages.partials.modal-provider-ips', [
+                'rows' => $this->selectedProviderIps,
+            ]));
+    }
+
+    // ✅ quando fechar, libera o poll novamente
+    protected function closeProviderModalState(): void
+    {
+        // Se você quiser manter o provedor selecionado após fechar, pode comentar as 2 linhas abaixo.
+        $this->selectedProvider = null;
+        $this->selectedProviderIps = [];
     }
 }

@@ -19,7 +19,6 @@ class ReportAggregator
         $symmetricContacts = array_values($parsed['symmetric_contacts'] ?? []);
         $asymmetricContacts = array_values($parsed['asymmetric_contacts'] ?? []);
 
-        // ✅ preferir contagem real quando vier lista
         $symmetricContactsCount = count($symmetricContacts) > 0
             ? count($symmetricContacts)
             : $this->extractSymmetricContactsCount($parsed);
@@ -41,10 +40,12 @@ class ReportAggregator
         $mobileEventsRows = [];
 
         foreach ($events as $e) {
-            $ip = $e['ip'] ?? null;
-            if (! $ip) {
+            $ipBase = $e['ip'] ?? null;
+            if (! $ipBase) {
                 continue;
             }
+
+            $ipDisplay = $e['ip_with_port'] ?? $ipBase;
 
             $timeUtc = $this->toCarbonUtc($e['time_utc'] ?? null);
             if (! $timeUtc) {
@@ -53,14 +54,16 @@ class ReportAggregator
 
             $timeLocal = $timeUtc->copy()->setTimezone($tz);
 
-            $info = $enrichedByIp[$ip] ?? ['city' => null, 'isp' => null, 'org' => null, 'mobile' => null];
+            $info = $enrichedByIp[$ipBase] ?? ['city' => null, 'isp' => null, 'org' => null, 'mobile' => null];
 
             $provider = trim(($info['isp'] ?? '') ?: ($info['org'] ?? ''));
+            $provider = preg_replace('/\s+/u', ' ', $provider ?? '') ?? '';
             if ($provider === '') {
                 $provider = 'Desconhecido';
             }
 
             $city = trim((string) ($info['city'] ?? ''));
+            $city = preg_replace('/\s+/u', ' ', $city ?? '') ?? '';
             if ($city === '') {
                 $city = 'Desconhecida';
             }
@@ -68,25 +71,27 @@ class ReportAggregator
             $mobile = (bool) ($info['mobile'] ?? false);
             $type = $mobile ? 'Móvel' : 'Residencial';
 
+            // ✅ Timeline mostra IP:PORT quando existir
             $timelineRows[] = [
                 'datetime' => $timeLocal->format('Y-m-d H:i:s'),
-                'ip' => $ip,
+                'ip' => $ipDisplay,
                 'provider' => $provider,
                 'city' => $city,
                 'type' => $type,
             ];
 
-            $uniqueIpAgg[$ip] ??= [
-                'ip' => $ip,
+            // ✅ Unique IP por IP base
+            $uniqueIpAgg[$ipBase] ??= [
+                'ip' => $ipBase,
                 'provider' => $provider,
                 'city' => $city,
                 'type' => $type,
                 'count' => 0,
                 'last_seen' => $timeLocal,
             ];
-            $uniqueIpAgg[$ip]['count']++;
-            if ($timeLocal->greaterThan($uniqueIpAgg[$ip]['last_seen'])) {
-                $uniqueIpAgg[$ip]['last_seen'] = $timeLocal;
+            $uniqueIpAgg[$ipBase]['count']++;
+            if ($timeLocal->greaterThan($uniqueIpAgg[$ipBase]['last_seen'])) {
+                $uniqueIpAgg[$ipBase]['last_seen'] = $timeLocal;
             }
 
             $providerStatsAgg[$provider] ??= [
@@ -98,7 +103,7 @@ class ReportAggregator
                 'last_seen' => $timeLocal,
             ];
             $providerStatsAgg[$provider]['occurrences']++;
-            $providerStatsAgg[$provider]['unique_ips'][$ip] = true;
+            $providerStatsAgg[$provider]['unique_ips'][$ipBase] = true;
             $providerStatsAgg[$provider]['cities'][$city] = true;
             if ($mobile) {
                 $providerStatsAgg[$provider]['mobile_occurrences']++;
@@ -116,7 +121,7 @@ class ReportAggregator
                 'last_seen' => $timeLocal,
             ];
             $cityStatsAgg[$city]['occurrences']++;
-            $cityStatsAgg[$city]['unique_ips'][$ip] = true;
+            $cityStatsAgg[$city]['unique_ips'][$ipBase] = true;
             $cityStatsAgg[$city]['providers'][$provider] = true;
             if ($mobile) {
                 $cityStatsAgg[$city]['mobile_occurrences']++;
@@ -125,17 +130,18 @@ class ReportAggregator
                 $cityStatsAgg[$city]['last_seen'] = $timeLocal;
             }
 
+            // ✅ provider_ip_map agora agrupa por IP:PORT (quando existir)
             $providerIpMap[$provider] ??= [];
-            $providerIpMap[$provider][$ip] ??= [
-                'ip' => $ip,
+            $providerIpMap[$provider][$ipDisplay] ??= [
+                'ip' => $ipDisplay,
                 'count' => 0,
                 'last_seen' => $timeLocal,
                 'city' => $city,
                 'mobile' => $mobile,
             ];
-            $providerIpMap[$provider][$ip]['count']++;
-            if ($timeLocal->greaterThan($providerIpMap[$provider][$ip]['last_seen'])) {
-                $providerIpMap[$provider][$ip]['last_seen'] = $timeLocal;
+            $providerIpMap[$provider][$ipDisplay]['count']++;
+            if ($timeLocal->greaterThan($providerIpMap[$provider][$ipDisplay]['last_seen'])) {
+                $providerIpMap[$provider][$ipDisplay]['last_seen'] = $timeLocal;
             }
 
             $hour = (int) $timeLocal->format('G');
@@ -145,7 +151,7 @@ class ReportAggregator
                 $nightTotalEvents++;
                 $nightEventsRows[] = [
                     'datetime' => $timeLocal->format('Y-m-d H:i:s'),
-                    'ip' => $ip,
+                    'ip' => $ipDisplay,
                     'provider' => $provider,
                     'city' => $city,
                     'type' => $type,
@@ -156,7 +162,7 @@ class ReportAggregator
                 $mobileTotalEvents++;
                 $mobileEventsRows[] = [
                     'datetime' => $timeLocal->format('Y-m-d H:i:s'),
-                    'ip' => $ip,
+                    'ip' => $ipDisplay,
                     'provider' => $provider,
                     'city' => $city,
                 ];
@@ -180,6 +186,7 @@ class ReportAggregator
         foreach ($providerStatsAgg as $prov => $s) {
             $occ = (int) $s['occurrences'];
             $mob = (int) $s['mobile_occurrences'];
+
             $providerStatsRows[] = [
                 'provider' => $prov,
                 'occurrences' => $occ,
@@ -196,6 +203,7 @@ class ReportAggregator
         foreach ($cityStatsAgg as $city => $s) {
             $occ = (int) $s['occurrences'];
             $mob = (int) $s['mobile_occurrences'];
+
             $cityStatsRows[] = [
                 'city' => $city,
                 'occurrences' => $occ,
@@ -214,8 +222,8 @@ class ReportAggregator
             usort($list, fn ($a, $b) => ($b['count'] <=> $a['count']) ?: ($b['last_seen']->timestamp <=> $a['last_seen']->timestamp));
 
             $providerIpMapOut[$prov] = array_map(fn ($r) => [
-                'ip' => $r['ip'],
-                'count' => $r['count'],
+                'ip' => $r['ip'], // ✅ ip:port (ou [ipv6]:port)
+                'count' => (int) $r['count'],
                 'last_seen' => $r['last_seen']->format('Y-m-d H:i:s'),
                 'city' => $r['city'] ?? '-',
                 'connection_type' => ($r['mobile'] ?? false) ? 'Móvel' : 'Residencial',

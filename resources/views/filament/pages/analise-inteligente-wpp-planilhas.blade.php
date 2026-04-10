@@ -35,7 +35,7 @@
         <x-filament::section class="mt-6" heading="Progresso">
             <div
                 class="space-y-3"
-                @if($running && empty($selectedContactType))
+                @if($running && empty($selectedContactType) && empty($selectedProvider))
                     wire:poll.1000ms="poll"
                 @endif
             >
@@ -64,6 +64,11 @@
                                 <span class="font-medium text-gray-700">Gerado em:</span>
                                 {{ $report['generated_at'] }}
                             </div>
+                            <div class="rounded-xl border p-4">
+                    <div class="text-sm text-gray-500">
+                        UTC convertido para: GMT-3 (Brasilia)
+                    </div>
+                </div>
                         @endif
 
                         @if(! empty($report['file_hash']))

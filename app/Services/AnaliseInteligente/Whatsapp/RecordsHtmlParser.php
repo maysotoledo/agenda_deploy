@@ -47,17 +47,16 @@ class RecordsHtmlParser
             'device' => $device,
             'device_build' => $deviceBuild,
 
-            // Totais informados no HTML (quando disponíveis)
             'symmetric_contacts_total' => $symTotal,
             'asymmetric_contacts_total' => $asymTotal,
 
-            // Mantém compatibilidade com seu report/summary
             'symmetric_contacts_count' => $symTotal,
             'asymmetric_contacts_count' => $asymTotal,
 
             'symmetric_contacts' => $symmetricContacts,
             'asymmetric_contacts' => $asymmetricContacts,
 
+            // ✅ agora cada evento tem ip (base) + ip_with_port (display) + port
             'ip_events' => $ipEvents,
         ];
     }
@@ -147,11 +146,6 @@ class RecordsHtmlParser
         ];
     }
 
-    /**
-     * ✅ FIX PRINCIPAL:
-     * Antes de strip_tags(), substitui os separadores <div class="p"></div> por \n,
-     * para os telefones NÃO ficarem colados.
-     */
     private function extractAddressBookContacts(\DOMDocument $dom, ?int $symCount, ?int $asymCount): array
     {
         $sectionHtml = $this->extractPropertySectionHtml($dom, 'property-address_book_info');
@@ -163,7 +157,6 @@ class RecordsHtmlParser
             ];
         }
 
-        // separadores do HTML
         $sectionHtml = preg_replace('/<div[^>]*class="p"[^>]*>\s*<\/div>/i', "\n", $sectionHtml) ?? $sectionHtml;
         $sectionHtml = preg_replace('/<br\s*\/?>/i', "\n", $sectionHtml) ?? $sectionHtml;
 
@@ -172,17 +165,14 @@ class RecordsHtmlParser
         $text = preg_replace("/\n+/", "\n", $text) ?? '';
         $text = trim($text);
 
-        // recorta a partir da área de contatos (opcional, ajuda performance)
         $startPos = stripos($text, 'Symmetric contacts');
         if ($startPos !== false) {
             $text = substr($text, $startPos);
         }
 
-        // Agora os números não ficam colados => boundary funciona
         preg_match_all('/(?<!\d)(55\d{10,13})(?!\d)/', $text, $matches);
         $allPhones = array_values($matches[1] ?? []);
 
-        // fallback extra: se por algum motivo vier vazio, tenta pegar qualquer sequência grande de dígitos
         if (count($allPhones) === 0) {
             preg_match_all('/\d{10,14}/', $text, $m2);
             $cands = array_values($m2[0] ?? []);
@@ -243,6 +233,7 @@ class RecordsHtmlParser
 
         $ipEvents = [];
         $lastTime = null;
+        $last = null; // ['ip' => base, 'ip_with_port' => display, 'port' => int|null]
 
         if (! $labels) {
             return $ipEvents;
@@ -264,21 +255,97 @@ class RecordsHtmlParser
 
             if ($label === 'Time') {
                 $lastTime = $this->parseUtc($value);
-            }
 
-            if ($label === 'IP Address') {
-                $ip = trim($value);
-
-                if ($ip !== '' && $lastTime instanceof Carbon) {
+                if ($last && $lastTime instanceof Carbon) {
                     $ipEvents[] = [
-                        'ip' => $ip,
+                        'ip' => $last['ip'], // base
+                        'ip_with_port' => $last['ip_with_port'], // display
+                        'port' => $last['port'],
                         'time_utc' => $lastTime->copy(),
                     ];
                 }
             }
+
+            if ($label === 'IP Address') {
+                $parsed = $this->parseIpAndPort($value);
+                $last = $parsed['ip'] ? $parsed : null;
+            }
         }
 
         return $ipEvents;
+    }
+
+    /**
+     * Retorna:
+     * - ip: IP base (sem porta / sem colchetes)
+     * - ip_with_port: string p/ exibição (mantém :porta e colchetes no IPv6)
+     * - port: int|null
+     */
+    private function parseIpAndPort(?string $value): array
+    {
+        $value = trim((string) $value);
+
+        if ($value === '') {
+            return ['ip' => null, 'ip_with_port' => null, 'port' => null];
+        }
+
+        // IPv6 [..]:port
+        if (preg_match('/^\[([0-9a-fA-F:]+)\]:(\d{1,5})$/', $value, $m)) {
+            $ipBase = trim($m[1]);
+            $port = (int) $m[2];
+
+            return [
+                'ip' => $ipBase,
+                'ip_with_port' => "[{$ipBase}]:{$port}",
+                'port' => $port,
+            ];
+        }
+
+        // IPv6 [..]
+        if (preg_match('/^\[([0-9a-fA-F:]+)\]$/', $value, $m)) {
+            $ipBase = trim($m[1]);
+
+            return [
+                'ip' => $ipBase,
+                'ip_with_port' => "[{$ipBase}]",
+                'port' => null,
+            ];
+        }
+
+        // IPv4 ip:port
+        if (preg_match('/^(\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/', $value, $m)) {
+            $ipBase = trim($m[1]);
+            $port = (int) $m[2];
+
+            return [
+                'ip' => $ipBase,
+                'ip_with_port' => "{$ipBase}:{$port}",
+                'port' => $port,
+            ];
+        }
+
+        // IPv4 ip
+        if (preg_match('/^(\d{1,3}(?:\.\d{1,3}){3})$/', $value, $m)) {
+            $ipBase = trim($m[1]);
+
+            return [
+                'ip' => $ipBase,
+                'ip_with_port' => $ipBase,
+                'port' => null,
+            ];
+        }
+
+        // fallback: mantém display e tenta base sem colchetes
+        $ipBase = $value;
+        if (preg_match('/^\[([^\]]+)\](?::\d+)?$/', $value, $m)) {
+            $ipBase = trim($m[1]);
+        }
+
+        return [
+            'ip' => $ipBase !== '' ? $ipBase : null,
+            'ip_with_port' => $value,
+            'port' => null,
+        ];
     }
 
     private function parseUtc(?string $value): ?Carbon

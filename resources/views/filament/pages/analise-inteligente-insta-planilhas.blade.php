@@ -33,7 +33,12 @@
 
     @if ($runId)
         <x-filament::section class="mt-6" heading="Progresso">
-            <div wire:poll.1000ms="poll" class="space-y-3">
+            <div
+                class="space-y-3"
+                @if($running && empty($selectedProvider))
+                    wire:poll.1000ms="poll"
+                @endif
+            >
                 <div class="text-sm text-gray-500">
                     Run ID: <span class="font-mono">{{ $runId }}</span>
                 </div>
@@ -94,6 +99,12 @@
                         Gerado em {{ $report['generated_at'] ?? '-' }}
                     </div>
                 </div>
+
+                <div class="rounded-xl border p-4">
+                    <div class="text-sm text-gray-500">
+                        UTC convertido para: GMT-3 (Brasilia)
+                    </div>
+                </div>
             </div>
 
             <div class="grid gap-4 md:grid-cols-2 mt-4">
@@ -103,10 +114,6 @@
                     <div class="font-semibold">
                         {{ $report['last_location_latitude'] ?? '-' }},
                         {{ $report['last_location_longitude'] ?? '-' }}
-                    </div>
-
-                    <div class="text-xs text-gray-500 mt-1">
-                        {{-- {{ $report['last_location_time'] ?? '-' }} --}}
                     </div>
 
                     @if(!empty($report['last_location_latitude']) && !empty($report['last_location_longitude']))
@@ -240,4 +247,7 @@
             @endif
         </div>
     @endif
+
+    {{-- ✅ host dos modais das Actions --}}
+    <x-filament-actions::modals />
 </x-filament-panels::page>

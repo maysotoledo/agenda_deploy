@@ -19,7 +19,11 @@ class RecordsHtmlParser
         $dateRange = $this->getSimpleValueByLabel($xp, 'Date Range');
         $accountIdentifier = $this->getSimpleValueByLabel($xp, 'Account Identifier');
         $registrationDate = $this->getSimpleValueByLabel($xp, 'Registration Date');
-        $registrationIp = $this->normalizeIp($this->getSimpleValueByLabel($xp, 'Registration Ip'));
+
+        // Registration IP (no HTML normalmente vem sem porta)
+        $registrationIpRaw = $this->getSimpleValueByLabel($xp, 'Registration Ip');
+        $registrationParsed = $this->parseIpAndPort($registrationIpRaw);
+        $registrationIp = $registrationParsed['ip'];
 
         $firstName = $this->extractFirstName($xp);
         $phone = $this->extractPhoneInfo($xp);
@@ -52,6 +56,7 @@ class RecordsHtmlParser
                 $lastLocation['longitude']
             ),
 
+            // ✅ agora cada evento tem ip (base) + ip_with_port (display) + port
             'ip_events' => $ipEvents,
         ];
     }
@@ -134,8 +139,6 @@ class RecordsHtmlParser
             $time = $this->parseUtc($m[1] . ' UTC');
         }
 
-        // Pega todos os decimais com sinal na seção Last Location.
-        // No log da Meta, as duas coordenadas são os dois últimos números desse tipo.
         preg_match_all('/-?\d+\.\d+/', $text, $matches);
         $numbers = $matches[0] ?? [];
 
@@ -194,7 +197,7 @@ class RecordsHtmlParser
         );
 
         $events = [];
-        $lastIp = null;
+        $last = null; // ['ip' => base, 'ip_with_port' => display, 'port' => int|null]
 
         foreach ($labels as $labelNode) {
             $label = trim($labelNode->childNodes->item(0)?->textContent ?? $labelNode->textContent ?? '');
@@ -211,15 +214,20 @@ class RecordsHtmlParser
             $value = trim($valueNode?->textContent ?? '');
 
             if ($label === 'IP Address') {
-                $lastIp = $this->normalizeIp($value);
+                $parsed = $this->parseIpAndPort($value);
+                $last = $parsed['ip'] ? $parsed : null;
             }
 
             if ($label === 'Time') {
                 $time = $this->parseUtc($value);
 
-                if ($lastIp && $time instanceof Carbon) {
+                if ($last && $time instanceof Carbon) {
                     $events[] = [
-                        'ip' => $lastIp,
+                        // base ip (pra enrichment / agregações)
+                        'ip' => $last['ip'],
+                        // display ip:port (como vem no HTML)
+                        'ip_with_port' => $last['ip_with_port'],
+                        'port' => $last['port'],
                         'time_utc' => $time->copy(),
                     ];
                 }
@@ -229,23 +237,82 @@ class RecordsHtmlParser
         return $events;
     }
 
-    private function normalizeIp(?string $value): ?string
+    /**
+     * Retorna:
+     * - ip: IP base (sem porta / sem colchetes)
+     * - ip_with_port: string original normalizada p/ exibição (mantém :porta e colchetes no IPv6)
+     * - port: int|null
+     */
+    private function parseIpAndPort(?string $value): array
     {
         $value = trim((string) $value);
 
         if ($value === '') {
-            return null;
+            return [
+                'ip' => null,
+                'ip_with_port' => null,
+                'port' => null,
+            ];
         }
 
-        if (preg_match('/^\[([^\]]+)\](?::\d+)?$/', $value, $m)) {
-            return trim($m[1]);
+        // IPv6 com colchetes + porta: [....]:38216
+        if (preg_match('/^\[([0-9a-fA-F:]+)\]:(\d{1,5})$/', $value, $m)) {
+            $ipBase = trim($m[1]);
+            $port = (int) $m[2];
+
+            return [
+                'ip' => $ipBase,
+                'ip_with_port' => "[{$ipBase}]:{$port}",
+                'port' => $port,
+            ];
         }
 
-        if (preg_match('/^(\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?$/', $value, $m)) {
-            return trim($m[1]);
+        // IPv6 com colchetes sem porta: [....]
+        if (preg_match('/^\[([0-9a-fA-F:]+)\]$/', $value, $m)) {
+            $ipBase = trim($m[1]);
+
+            return [
+                'ip' => $ipBase,
+                'ip_with_port' => "[{$ipBase}]",
+                'port' => null,
+            ];
         }
 
-        return $value;
+        // IPv4 com porta: 201.221.119.237:16653
+        if (preg_match('/^(\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/', $value, $m)) {
+            $ipBase = trim($m[1]);
+            $port = (int) $m[2];
+
+            return [
+                'ip' => $ipBase,
+                'ip_with_port' => "{$ipBase}:{$port}",
+                'port' => $port,
+            ];
+        }
+
+        // IPv4 sem porta: 45.235.161.146
+        if (preg_match('/^(\d{1,3}(?:\.\d{1,3}){3})$/', $value, $m)) {
+            $ipBase = trim($m[1]);
+
+            return [
+                'ip' => $ipBase,
+                'ip_with_port' => $ipBase,
+                'port' => null,
+            ];
+        }
+
+        // fallback: tenta tratar como “ip puro”
+        // (mantém o texto como display e remove colchetes pra base se existirem)
+        $ipBase = $value;
+        if (preg_match('/^\[([^\]]+)\]$/', $value, $m)) {
+            $ipBase = trim($m[1]);
+        }
+
+        return [
+            'ip' => $ipBase !== '' ? $ipBase : null,
+            'ip_with_port' => $value,
+            'port' => null,
+        ];
     }
 
     private function makeMapsUrl(?float $lat, ?float $lng): ?string
