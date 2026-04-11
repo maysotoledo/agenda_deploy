@@ -21,11 +21,11 @@ class TelematicaWhatsapp extends Page
 
     public function getTitle(): string
     {
-        return 'WhatsApp';
+        return '';
     }
 
     public function getHeading(): string
     {
-        return 'WhatsApp';
+        return '';
     }
 }

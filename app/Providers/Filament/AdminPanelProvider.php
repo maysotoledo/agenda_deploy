@@ -44,6 +44,7 @@ class AdminPanelProvider extends PanelProvider
             ])
             // ✅ ORDEM DOS GRUPOS DO MENU
              ->navigationGroups([
+                'Agenda',
                  'Informação Telemática',
                  'Análise Telemática',
              ])

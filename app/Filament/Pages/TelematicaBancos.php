@@ -5,27 +5,27 @@ namespace App\Filament\Pages;
 use BezhanSalleh\FilamentShield\Traits\HasPageShield;
 use Filament\Pages\Page;
 
-class TelematicaMeta extends Page
+class TelematicaBancos extends Page
 {
     use HasPageShield;
 
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-building-library';
-    protected static ?string $navigationLabel = 'Meta (Facebook/Instagram)';
+    protected static ?string $navigationLabel = 'Bancos';
 
     protected static string|\UnitEnum|null $navigationGroup = 'Informação Telemática';
-    protected static ?int $navigationSort = 2;
+    protected static ?int $navigationSort = 8;
 
-    protected static ?string $slug = 'telematica/meta';
+    protected static ?string $slug = 'telematica/bancos';
 
-    protected string $view = 'filament.pages.telematica-meta';
+    protected string $view = 'filament.pages.telematica-bancos';
 
     public function getTitle(): string
     {
-        return '';
+        return 'Bancos';
     }
 
     public function getHeading(): string
     {
-        return '';
+        return 'Bancos';
     }
 }

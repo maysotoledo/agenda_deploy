@@ -21,11 +21,11 @@ class TelematicaApple extends Page
 
     public function getTitle(): string
     {
-        return 'Apple';
+        return '';
     }
 
     public function getHeading(): string
     {
-        return 'Apple';
+        return '';
     }
 }

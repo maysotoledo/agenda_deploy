@@ -21,11 +21,11 @@ class TelematicaGoogle extends Page
 
     public function getTitle(): string
     {
-        return 'Google';
+        return '';
     }
 
     public function getHeading(): string
     {
-        return 'Google';
+        return '';
     }
 }
