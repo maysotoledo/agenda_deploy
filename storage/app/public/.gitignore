@@ -1,2 +1,6 @@
 *
 !.gitignore
+!uploads/
+!uploads/**
+!telematica/
+!telematica/**
