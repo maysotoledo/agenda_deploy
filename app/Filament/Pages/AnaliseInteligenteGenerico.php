@@ -18,12 +18,10 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use BezhanSalleh\FilamentShield\Traits\HasPageShield;
 
-
 class AnaliseInteligenteGenerico extends Page implements HasSchemas
 {
     use InteractsWithSchemas;
     use HasPageShield;
-
 
     protected static ?string $navigationLabel = 'Análise log GENÉRICO';
     protected static ?string $title = 'Análise de log genérico';
@@ -45,10 +43,12 @@ class AnaliseInteligenteGenerico extends Page implements HasSchemas
     {
         return 'Análise Telemática';
     }
+
     public static function getNavigationSort(): ?int
     {
         return 1;
     }
+
     public function mount(): void
     {
         $this->form->fill();
@@ -153,6 +153,7 @@ class AnaliseInteligenteGenerico extends Page implements HasSchemas
         try {
             $run = DB::transaction(function () use ($parsed, $ipsMap, $storedPath) {
                 $run = AnaliseRun::create([
+                    'user_id' => auth()->id(), // ✅ CORRIGIDO: salva quem criou
                     'uuid' => (string) str()->uuid(),
                     'target' => null,
                     'total_unique_ips' => count($ipsMap),
@@ -181,7 +182,6 @@ class AnaliseInteligenteGenerico extends Page implements HasSchemas
                 return $run;
             });
         } catch (\Illuminate\Database\Eloquent\JsonEncodingException $e) {
-            // Se ainda ocorrer, é algum byte inválido que escapou: avisar com dica
             Notification::make()
                 ->title('Erro ao salvar o relatório (JSON/UTF-8)')
                 ->body('O texto extraído contém caracteres inválidos. Revise a sanitização ou reduza campos textuais muito longos.')
@@ -307,11 +307,6 @@ class AnaliseInteligenteGenerico extends Page implements HasSchemas
         return (string) file_get_contents($absPath);
     }
 
-    /**
-     * Sanitiza arrays/strings para JSON do Eloquent (UTF-8 válido).
-     * - Remove bytes inválidos via iconv //IGNORE
-     * - Trunca strings absurdamente grandes (opcional, mas recomendado)
-     */
     private function sanitizeForJson(mixed $value): mixed
     {
         if (is_array($value)) {
@@ -322,11 +317,9 @@ class AnaliseInteligenteGenerico extends Page implements HasSchemas
         }
 
         if (is_string($value)) {
-            // limite por string: 50k evita explodir o JSON e reduz risco de lixo de PDF
             return $this->toValidUtf8($value, 50_000);
         }
 
-        // Carbon e outros objetos podem aparecer: deixa passar (Carbon serializa)
         if ($value instanceof \JsonSerializable) {
             return $value;
         }
@@ -336,19 +329,15 @@ class AnaliseInteligenteGenerico extends Page implements HasSchemas
 
     private function toValidUtf8(string $value, int $maxLen): string
     {
-        // 1) remove bytes inválidos
         $fixed = @iconv('UTF-8', 'UTF-8//IGNORE', $value);
         if ($fixed === false) {
-            // fallback: remove bytes fora do range básico
             $fixed = preg_replace('/[^\x09\x0A\x0D\x20-\x7E]/', '', $value) ?? $value;
         }
 
-        // 2) garante que não vai estourar storage e evita textos gigantes do PDF
         if ($maxLen > 0 && strlen($fixed) > $maxLen) {
             $fixed = substr($fixed, 0, $maxLen);
         }
 
-        // 3) remove controles invisíveis (agora o texto já é UTF-8 “limpo”)
         $fixed = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $fixed) ?? $fixed;
 
         return $fixed;

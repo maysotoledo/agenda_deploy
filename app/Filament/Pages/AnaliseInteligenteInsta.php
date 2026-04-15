@@ -163,6 +163,7 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
 
         $run = DB::transaction(function () use ($parsed, $ipsMap) {
             $run = AnaliseRun::create([
+                'user_id' => auth()->id(), // ✅ CORRIGIDO: salva quem criou
                 'uuid' => (string) str()->uuid(),
                 'target' => $parsed['target'] ?? null,
                 'total_unique_ips' => count($ipsMap),
