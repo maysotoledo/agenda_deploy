@@ -20,6 +20,9 @@ class RecordsHtmlParser
         $accountIdentifier = $this->getSimpleValueByLabel($xp, 'Account Identifier');
         $registrationDate = $this->getSimpleValueByLabel($xp, 'Registration Date');
 
+        // ✅ fallback: se não vier Target, usa Account Identifier como alvo
+        $target = $target ?? $accountIdentifier;
+
         // Registration IP (no HTML normalmente vem sem porta)
         $registrationIpRaw = $this->getSimpleValueByLabel($xp, 'Registration Ip');
         $registrationParsed = $this->parseIpAndPort($registrationIpRaw);
@@ -56,7 +59,6 @@ class RecordsHtmlParser
                 $lastLocation['longitude']
             ),
 
-            // ✅ agora cada evento tem ip (base) + ip_with_port (display) + port
             'ip_events' => $ipEvents,
         ];
     }
@@ -197,7 +199,7 @@ class RecordsHtmlParser
         );
 
         $events = [];
-        $last = null; // ['ip' => base, 'ip_with_port' => display, 'port' => int|null]
+        $last = null;
 
         foreach ($labels as $labelNode) {
             $label = trim($labelNode->childNodes->item(0)?->textContent ?? $labelNode->textContent ?? '');
@@ -223,9 +225,7 @@ class RecordsHtmlParser
 
                 if ($last && $time instanceof Carbon) {
                     $events[] = [
-                        // base ip (pra enrichment / agregações)
                         'ip' => $last['ip'],
-                        // display ip:port (como vem no HTML)
                         'ip_with_port' => $last['ip_with_port'],
                         'port' => $last['port'],
                         'time_utc' => $time->copy(),
@@ -237,12 +237,6 @@ class RecordsHtmlParser
         return $events;
     }
 
-    /**
-     * Retorna:
-     * - ip: IP base (sem porta / sem colchetes)
-     * - ip_with_port: string original normalizada p/ exibição (mantém :porta e colchetes no IPv6)
-     * - port: int|null
-     */
     private function parseIpAndPort(?string $value): array
     {
         $value = trim((string) $value);
@@ -255,7 +249,6 @@ class RecordsHtmlParser
             ];
         }
 
-        // IPv6 com colchetes + porta: [....]:38216
         if (preg_match('/^\[([0-9a-fA-F:]+)\]:(\d{1,5})$/', $value, $m)) {
             $ipBase = trim($m[1]);
             $port = (int) $m[2];
@@ -267,7 +260,6 @@ class RecordsHtmlParser
             ];
         }
 
-        // IPv6 com colchetes sem porta: [....]
         if (preg_match('/^\[([0-9a-fA-F:]+)\]$/', $value, $m)) {
             $ipBase = trim($m[1]);
 
@@ -278,7 +270,6 @@ class RecordsHtmlParser
             ];
         }
 
-        // IPv4 com porta: 201.221.119.237:16653
         if (preg_match('/^(\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/', $value, $m)) {
             $ipBase = trim($m[1]);
             $port = (int) $m[2];
@@ -290,7 +281,6 @@ class RecordsHtmlParser
             ];
         }
 
-        // IPv4 sem porta: 45.235.161.146
         if (preg_match('/^(\d{1,3}(?:\.\d{1,3}){3})$/', $value, $m)) {
             $ipBase = trim($m[1]);
 
@@ -301,8 +291,6 @@ class RecordsHtmlParser
             ];
         }
 
-        // fallback: tenta tratar como “ip puro”
-        // (mantém o texto como display e remove colchetes pra base se existirem)
         $ipBase = $value;
         if (preg_match('/^\[([^\]]+)\]$/', $value, $m)) {
             $ipBase = trim($m[1]);
