@@ -18,14 +18,7 @@ class TelematicaApple extends Page
     protected static ?string $slug = 'telematica/apple';
 
     protected string $view = 'filament.pages.telematica-apple';
+    
+    protected static ?string $title = 'APPLE';
 
-    public function getTitle(): string
-    {
-        return '';
-    }
-
-    public function getHeading(): string
-    {
-        return '';
-    }
 }

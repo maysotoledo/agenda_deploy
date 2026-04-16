@@ -19,13 +19,6 @@ class TelematicaConexao extends Page
 
     protected string $view = 'filament.pages.telematica-conexao';
 
-    public function getTitle(): string
-    {
-        return 'Conexão';
-    }
+    protected static ?string $title = 'CONEXAO';
 
-    public function getHeading(): string
-    {
-        return 'Conexão';
-    }
 }

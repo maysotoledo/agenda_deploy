@@ -19,13 +19,6 @@ class TelematicaBancos extends Page
 
     protected string $view = 'filament.pages.telematica-bancos';
 
-    public function getTitle(): string
-    {
-        return 'Bancos';
-    }
+    protected static ?string $title = 'BANCOS';
 
-    public function getHeading(): string
-    {
-        return 'Bancos';
-    }
 }

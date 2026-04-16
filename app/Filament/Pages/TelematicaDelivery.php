@@ -19,13 +19,5 @@ class TelematicaDelivery extends Page
 
     protected string $view = 'filament.pages.telematica-delivery';
 
-    public function getTitle(): string
-    {
-        return 'Delivery';
-    }
-
-    public function getHeading(): string
-    {
-        return 'Delivery';
-    }
+    protected static ?string $title = 'DELIVERY';
 }

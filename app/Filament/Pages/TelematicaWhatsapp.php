@@ -18,14 +18,6 @@ class TelematicaWhatsapp extends Page
     protected static ?string $slug = 'telematica/whatsapp';
 
     protected string $view = 'filament.pages.telematica-whatsapp';
+    protected static ?string $title = 'WHATSAPP';
 
-    public function getTitle(): string
-    {
-        return '';
-    }
-
-    public function getHeading(): string
-    {
-        return '';
-    }
 }

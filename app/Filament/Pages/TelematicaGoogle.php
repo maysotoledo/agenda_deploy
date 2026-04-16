@@ -19,13 +19,6 @@ class TelematicaGoogle extends Page
 
     protected string $view = 'filament.pages.telematica-google';
 
-    public function getTitle(): string
-    {
-        return '';
-    }
+    protected static ?string $title = 'GOOGLE';
 
-    public function getHeading(): string
-    {
-        return '';
-    }
 }

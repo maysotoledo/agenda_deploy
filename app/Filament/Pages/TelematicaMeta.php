@@ -19,13 +19,6 @@ class TelematicaMeta extends Page
 
     protected string $view = 'filament.pages.telematica-meta';
 
-    public function getTitle(): string
-    {
-        return '';
-    }
+    protected static ?string $title = 'META';
 
-    public function getHeading(): string
-    {
-        return '';
-    }
 }

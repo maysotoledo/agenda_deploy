@@ -19,13 +19,6 @@ class TelematicaTelefoniaMovel extends Page
 
     protected string $view = 'filament.pages.telematica-telefonia-movel';
 
-    public function getTitle(): string
-    {
-        return 'Telefonia Móvel';
-    }
+    protected static ?string $title = 'TELEFONIA MOVEL';
 
-    public function getHeading(): string
-    {
-        return 'Telefonia Móvel';
-    }
 }
