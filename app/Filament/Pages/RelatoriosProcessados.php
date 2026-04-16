@@ -66,22 +66,31 @@ class RelatoriosProcessados extends Page implements HasTable
                     ->state(function (AnaliseRun $record): string {
                         $source = $this->resolveSource($record);
 
+                        // 📸 Instagram → mostra o @usuario
                         if ($source === 'instagram') {
-                            return data_get($record->report, '_parsed.account_identifier') ?? '-';
+                            return data_get($record->report, '_parsed.account_identifier')
+                                ?? $record->target
+                                ?? data_get($record->report, '_parsed.target')
+                                ?? '-';
                         }
 
+                        // 🧾 Genérico → mostra nome do arquivo (quando existir), senão ID
                         if ($source === 'generico') {
                             $file = data_get($record->report, '_file');
                             return $file ? basename((string) $file) : ('Run #' . $record->id);
                         }
 
-                        return $record->target ?? '-';
+                        // 📱 WhatsApp → fallback para Account Identifier (runs antigos)
+                        return $record->target
+                            ?? data_get($record->report, '_parsed.target')
+                            ?? data_get($record->report, '_parsed.account_identifier')
+                            ?? '-';
                     })
                     ->searchable()
                     ->copyable()
                     ->wrap(),
 
-                // ✅ NOVO: Quem criou
+                // ✅ NOVO: usuário que criou
                 Tables\Columns\TextColumn::make('user.name')
                     ->label('Criado por')
                     ->state(fn (AnaliseRun $record) => $record->user?->name ?? '—')
@@ -152,10 +161,11 @@ class RelatoriosProcessados extends Page implements HasTable
                             return $query;
                         }
 
+                        // aceita também runs antigos salvos como "generic"
                         if ($value === 'generico') {
                             return $query->where(function (Builder $q) {
                                 $q->where('report->_source', 'generico')
-                                    ->orWhere('report->_source', 'generic');
+                                  ->orWhere('report->_source', 'generic');
                             });
                         }
 
@@ -169,10 +179,14 @@ class RelatoriosProcessados extends Page implements HasTable
     protected function getTableQuery(): Builder
     {
         return AnaliseRun::query()
-            ->with('user') // ✅ evita N+1
+            ->with('user') // ✅ evita N+1 ao mostrar "Criado por"
             ->orderByDesc('id');
     }
 
+    /**
+     * ✅ Agora reconhece "generico" (e "generic" legado).
+     * ✅ Se não vier _source, tenta inferir por estrutura do _parsed.
+     */
     public function resolveSource(AnaliseRun $run): string
     {
         $source = data_get($run->report, '_source');
@@ -189,6 +203,7 @@ class RelatoriosProcessados extends Page implements HasTable
             }
         }
 
+        // fallback para runs antigos sem _source salvo:
         if (
             data_get($run->report, '_parsed.first_name') !== null ||
             data_get($run->report, '_parsed.account_identifier') !== null ||

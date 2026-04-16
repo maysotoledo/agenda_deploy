@@ -14,7 +14,13 @@ class RecordsHtmlParser
         $dom->loadHTML($html);
         $xp = new \DOMXPath($dom);
 
+        // ❗ Alguns relatórios não trazem "Target", só "Account Identifier"
         $target = $this->getSimpleValueByLabel($xp, 'Target');
+        $accountIdentifier = $this->getSimpleValueByLabel($xp, 'Account Identifier');
+
+        // ✅ fallback: usa Account Identifier como alvo
+        $target = $target ?? $accountIdentifier;
+
         $generated = $this->getSimpleValueByLabel($xp, 'Generated');
         $dateRange = $this->getSimpleValueByLabel($xp, 'Date Range');
 
@@ -38,7 +44,10 @@ class RecordsHtmlParser
         $generatedAtUtc = $this->parseUtc($generated);
 
         return [
+            // ✅ agora vai vir preenchido com Account Identifier quando não existir Target
             'target' => $target,
+            'account_identifier' => $accountIdentifier, // (opcional, mas útil)
+
             'generated_at' => $generatedAtUtc,
             'date_range' => $dateRange,
             'range_start_utc' => $rangeStartUtc,
@@ -56,7 +65,7 @@ class RecordsHtmlParser
             'symmetric_contacts' => $symmetricContacts,
             'asymmetric_contacts' => $asymmetricContacts,
 
-            // ✅ agora cada evento tem ip (base) + ip_with_port (display) + port
+            // ✅ cada evento tem ip (base) + ip_with_port (display) + port
             'ip_events' => $ipEvents,
         ];
     }
@@ -258,8 +267,8 @@ class RecordsHtmlParser
 
                 if ($last && $lastTime instanceof Carbon) {
                     $ipEvents[] = [
-                        'ip' => $last['ip'], // base
-                        'ip_with_port' => $last['ip_with_port'], // display
+                        'ip' => $last['ip'],
+                        'ip_with_port' => $last['ip_with_port'],
                         'port' => $last['port'],
                         'time_utc' => $lastTime->copy(),
                     ];
@@ -275,12 +284,6 @@ class RecordsHtmlParser
         return $ipEvents;
     }
 
-    /**
-     * Retorna:
-     * - ip: IP base (sem porta / sem colchetes)
-     * - ip_with_port: string p/ exibição (mantém :porta e colchetes no IPv6)
-     * - port: int|null
-     */
     private function parseIpAndPort(?string $value): array
     {
         $value = trim((string) $value);
@@ -289,7 +292,6 @@ class RecordsHtmlParser
             return ['ip' => null, 'ip_with_port' => null, 'port' => null];
         }
 
-        // IPv6 [..]:port
         if (preg_match('/^\[([0-9a-fA-F:]+)\]:(\d{1,5})$/', $value, $m)) {
             $ipBase = trim($m[1]);
             $port = (int) $m[2];
@@ -301,7 +303,6 @@ class RecordsHtmlParser
             ];
         }
 
-        // IPv6 [..]
         if (preg_match('/^\[([0-9a-fA-F:]+)\]$/', $value, $m)) {
             $ipBase = trim($m[1]);
 
@@ -312,7 +313,6 @@ class RecordsHtmlParser
             ];
         }
 
-        // IPv4 ip:port
         if (preg_match('/^(\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/', $value, $m)) {
             $ipBase = trim($m[1]);
             $port = (int) $m[2];
@@ -324,7 +324,6 @@ class RecordsHtmlParser
             ];
         }
 
-        // IPv4 ip
         if (preg_match('/^(\d{1,3}(?:\.\d{1,3}){3})$/', $value, $m)) {
             $ipBase = trim($m[1]);
 
@@ -335,7 +334,6 @@ class RecordsHtmlParser
             ];
         }
 
-        // fallback: mantém display e tenta base sem colchetes
         $ipBase = $value;
         if (preg_match('/^\[([^\]]+)\](?::\d+)?$/', $value, $m)) {
             $ipBase = trim($m[1]);

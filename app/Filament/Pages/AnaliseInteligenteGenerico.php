@@ -104,15 +104,11 @@ class AnaliseInteligenteGenerico extends Page implements HasSchemas
             return;
         }
 
-        // ✅ sanitiza o texto bruto (remove bytes inválidos antes do parse)
         $rawText = $this->toValidUtf8($rawText, 2_000_000);
 
         $parsed = (new GenericLogParser())->parse($rawText);
-
-        // ✅ FIX DEFINITIVO: sanitiza recursivamente tudo antes de salvar no JSON
         $parsed = $this->sanitizeForJson($parsed);
 
-        // Mapeia IPs
         $ipsMap = [];
         foreach (($parsed['events'] ?? []) as $event) {
             $ip = trim((string) ($event['ip'] ?? ''));
@@ -153,7 +149,7 @@ class AnaliseInteligenteGenerico extends Page implements HasSchemas
         try {
             $run = DB::transaction(function () use ($parsed, $ipsMap, $storedPath) {
                 $run = AnaliseRun::create([
-                    'user_id' => auth()->id(), // ✅ CORRIGIDO: salva quem criou
+                    'user_id' => auth()->id(), // ✅ quem criou
                     'uuid' => (string) str()->uuid(),
                     'target' => null,
                     'total_unique_ips' => count($ipsMap),

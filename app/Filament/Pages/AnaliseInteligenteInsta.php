@@ -41,7 +41,6 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
     public int $chunkSize = 5;
     public string $tab = 'timeline';
 
-    // ✅ NOVO: estado do modal de provedor
     public ?string $selectedProvider = null;
     public array $selectedProviderIps = [];
 
@@ -97,7 +96,6 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
         $this->progress = 0;
         $this->tab = 'timeline';
 
-        // ✅ reset modal provedor
         $this->selectedProvider = null;
         $this->selectedProviderIps = [];
 
@@ -163,7 +161,7 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
 
         $run = DB::transaction(function () use ($parsed, $ipsMap) {
             $run = AnaliseRun::create([
-                'user_id' => auth()->id(), // ✅ CORRIGIDO: salva quem criou
+                'user_id' => auth()->id(), // ✅ quem criou
                 'uuid' => (string) str()->uuid(),
                 'target' => $parsed['target'] ?? null,
                 'total_unique_ips' => count($ipsMap),
@@ -199,7 +197,6 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
 
     public function poll(): void
     {
-        // ✅ se o modal de provedor estiver aberto, não re-renderiza
         if ($this->selectedProvider !== null) {
             return;
         }
@@ -244,7 +241,6 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
         $this->report = null;
         $this->tab = 'timeline';
 
-        // ✅ reset modal provedor
         $this->selectedProvider = null;
         $this->selectedProviderIps = [];
 
@@ -298,7 +294,6 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
         $this->report = (new ReportAggregator())->buildReport($parsed, $enrichedByIp);
     }
 
-    // ✅ NOVO: escuta o evento disparado pela ProvidersStatsTable
     #[On('open-provider-ips-modal')]
     public function openProviderIpsModal(string $provider): void
     {
@@ -310,7 +305,6 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
         $this->mountAction('providerIpsModal');
     }
 
-    // ✅ NOVO: modal de IPs do provedor
     public function providerIpsModal(): Action
     {
         return Action::make('providerIpsModal')
