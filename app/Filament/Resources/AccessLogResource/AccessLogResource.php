@@ -25,7 +25,7 @@ class AccessLogResource extends Resource
 
     public static function getNavigationGroup(): string|\UnitEnum|null
     {
-        return 'Filament Shield';
+        return 'Logs';
     }
 
     public static function getNavigationLabel(): string

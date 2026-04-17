@@ -7,9 +7,11 @@ use App\Models\AnaliseRunIp;
 use App\Models\IpEnrichment;
 use App\Services\AnaliseInteligente\ReportAggregator;
 use Filament\Pages\Page;
+use App\Models\Concerns\Auditable;
 
 class VerAnaliseRun extends Page
 {
+    use Auditable;
     protected static string|\BackedEnum|null $navigationIcon = null;
     protected static bool $shouldRegisterNavigation = false;
 

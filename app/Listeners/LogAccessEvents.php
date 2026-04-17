@@ -2,10 +2,10 @@
 
 namespace App\Listeners;
 
-use App\Models\AccessLog;
+use App\Models\AuditLog;
+use Illuminate\Auth\Events\Failed;
 use Illuminate\Auth\Events\Login;
 use Illuminate\Auth\Events\Logout;
-use Illuminate\Auth\Events\Failed;
 use Illuminate\Http\Request;
 
 class LogAccessEvents
@@ -16,51 +16,56 @@ class LogAccessEvents
     {
         $ip = $this->request->ip();
         $ua = substr((string) $this->request->userAgent(), 0, 2000);
+        $route = optional($this->request->route())->getName();
 
         if ($event instanceof Login) {
-            AccessLog::create([
+            AuditLog::create([
                 'user_id' => $event->user?->id,
                 'email' => $event->user?->email,
-                'event' => 'login_success',
+                'action' => 'login_success',
+                'route' => $route,
+                'method' => $this->request->method(),
+                'url' => $this->request->fullUrl(),
                 'ip' => $ip,
                 'user_agent' => $ua,
-                'occurred_at' => now(),
                 'meta' => ['guard' => $event->guard],
+                'occurred_at' => now(),
             ]);
             return;
         }
 
         if ($event instanceof Logout) {
-            AccessLog::create([
+            AuditLog::create([
                 'user_id' => $event->user?->id,
                 'email' => $event->user?->email,
-                'event' => 'logout',
+                'action' => 'logout',
+                'route' => $route,
+                'method' => $this->request->method(),
+                'url' => $this->request->fullUrl(),
                 'ip' => $ip,
                 'user_agent' => $ua,
-                'occurred_at' => now(),
                 'meta' => ['guard' => $event->guard],
+                'occurred_at' => now(),
             ]);
             return;
         }
 
         if ($event instanceof Failed) {
-            // Aqui geralmente não tem user, então pegamos o email tentado
-            $email = null;
             $creds = (array) $event->credentials;
             $email = $creds['email'] ?? $creds['username'] ?? null;
 
-            AccessLog::create([
+            AuditLog::create([
                 'user_id' => $event->user?->id,
                 'email' => is_string($email) ? $email : null,
-                'event' => 'login_failed',
+                'action' => 'login_failed',
+                'route' => $route,
+                'method' => $this->request->method(),
+                'url' => $this->request->fullUrl(),
                 'ip' => $ip,
                 'user_agent' => $ua,
+                'meta' => ['guard' => $event->guard],
                 'occurred_at' => now(),
-                'meta' => [
-                    'guard' => $event->guard,
-                ],
             ]);
-            return;
         }
     }
 }
