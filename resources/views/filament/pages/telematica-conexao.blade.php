@@ -85,11 +85,11 @@
                 <div class="cx-title">STARLINK</div>
                 <div class="cx-body">
                     <div><b>📩 Contato:</b></div>
-                    <div>• <a href="mailto:starlinklawenforcement@spacex.com">starlinklawenforcement@spacex.com</a></div>
-                    <div>• <a href="mailto:walter.coursol@spacex.com">walter.coursol@spacex.com</a></div>
+                    <div><a href="mailto:starlinklawenforcement@spacex.com">starlinklawenforcement@spacex.com</a></div>
+                    <div><a href="mailto:walter.coursol@spacex.com">walter.coursol@spacex.com</a></div>
 
                     <div style="margin-top:10px;"><b>📲 Emergencial:</b></div>
-                    <div>• <a href="mailto:starlinklawenforcementexigent@spacex.com">starlinklawenforcementexigent@spacex.com</a></div>
+                    <div><a href="mailto:starlinklawenforcementexigent@spacex.com">starlinklawenforcementexigent@spacex.com</a></div>
                 </div>
             </div>
 
