@@ -4,12 +4,14 @@ namespace App\Filament\Pages;
 
 use App\Models\AnaliseRun;
 use BezhanSalleh\FilamentShield\Traits\HasPageShield;
+use Filament\Actions\BulkAction;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
 use Filament\Tables;
 use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Collection;
 use Livewire\Attributes\On;
 
 class RelatoriosProcessados extends Page implements HasTable
@@ -42,8 +44,44 @@ class RelatoriosProcessados extends Page implements HasTable
     public function table(Table $table): Table
     {
         return $table
+            ->deferLoading()
             ->query($this->getTableQuery())
             ->defaultSort('id', 'desc')
+
+            // ✅ BULK ACTIONS (Filament 4): ficam no toolbarActions()
+            ->toolbarActions([
+                BulkAction::make('deleteSelected')
+                    ->label('Excluir selecionados')
+                    ->icon('heroicon-o-trash')
+                    ->color('danger')
+                    ->requiresConfirmation()
+                    ->modalHeading('Excluir relatórios selecionados')
+                    ->modalDescription('Essa ação não pode ser desfeita. Deseja realmente excluir os relatórios selecionados?')
+                    ->modalSubmitActionLabel('Excluir')
+                    // ✅ NÃO carregar modelos (evita memória alta); o $records vira Collection de IDs
+                    ->fetchSelectedRecords(false)
+                    ->action(function (Collection $records): void {
+                        $ids = $records->values()->all();
+                        $count = count($ids);
+
+                        if ($count === 0) {
+                            Notification::make()
+                                ->title('Nenhum relatório selecionado.')
+                                ->warning()
+                                ->send();
+                            return;
+                        }
+
+                        AnaliseRun::query()->whereKey($ids)->delete();
+
+                        Notification::make()
+                            ->title("{$count} relatório(s) excluído(s) com sucesso.")
+                            ->success()
+                            ->send();
+                    })
+                    ->deselectRecordsAfterCompletion(),
+            ])
+
             ->columns([
                 Tables\Columns\TextColumn::make('id')
                     ->label('ID')
@@ -61,36 +99,17 @@ class RelatoriosProcessados extends Page implements HasTable
                         default => 'gray',
                     }),
 
-                Tables\Columns\TextColumn::make('target_display')
+                Tables\Columns\TextColumn::make('target')
                     ->label('Alvo')
                     ->state(function (AnaliseRun $record): string {
-                        $source = $this->resolveSource($record);
-
-                        // 📸 Instagram → mostra o @usuario
-                        if ($source === 'instagram') {
-                            return data_get($record->report, '_parsed.account_identifier')
-                                ?? $record->target
-                                ?? data_get($record->report, '_parsed.target')
-                                ?? '-';
-                        }
-
-                        // 🧾 Genérico → mostra nome do arquivo (quando existir), senão ID
-                        if ($source === 'generico') {
-                            $file = data_get($record->report, '_file');
-                            return $file ? basename((string) $file) : ('Run #' . $record->id);
-                        }
-
-                        // 📱 WhatsApp → fallback para Account Identifier (runs antigos)
-                        return $record->target
-                            ?? data_get($record->report, '_parsed.target')
-                            ?? data_get($record->report, '_parsed.account_identifier')
-                            ?? '-';
+                        return $this->resolveSource($record) === 'generico'
+                            ? 'Run #' . $record->id
+                            : ($record->target ?: '-');
                     })
                     ->searchable()
                     ->copyable()
                     ->wrap(),
 
-                // ✅ NOVO: usuário que criou
                 Tables\Columns\TextColumn::make('user.name')
                     ->label('Criado por')
                     ->state(fn (AnaliseRun $record) => $record->user?->name ?? '—')
@@ -161,35 +180,40 @@ class RelatoriosProcessados extends Page implements HasTable
                             return $query;
                         }
 
-                        // aceita também runs antigos salvos como "generic"
                         if ($value === 'generico') {
                             return $query->where(function (Builder $q) {
                                 $q->where('report->_source', 'generico')
-                                  ->orWhere('report->_source', 'generic');
+                                    ->orWhere('report->_source', 'generic');
                             });
                         }
 
                         return $query->where('report->_source', $value);
                     }),
             ])
-            ->paginated([10, 25, 50, 100])
-            ->defaultPaginationPageOption(25);
+            ->paginated([10, 25, 50])
+            ->defaultPaginationPageOption(10);
     }
 
     protected function getTableQuery(): Builder
     {
         return AnaliseRun::query()
-            ->with('user') // ✅ evita N+1 ao mostrar "Criado por"
-            ->orderByDesc('id');
+            ->with('user')
+            ->select([
+                'analise_runs.id',
+                'analise_runs.user_id',
+                'analise_runs.target',
+                'analise_runs.status',
+                'analise_runs.progress',
+                'analise_runs.total_unique_ips',
+                'analise_runs.processed_unique_ips',
+                'analise_runs.created_at',
+            ])
+            ->selectRaw("LOWER(JSON_UNQUOTE(JSON_EXTRACT(analise_runs.report, '$._source'))) as source_extracted");
     }
 
-    /**
-     * ✅ Agora reconhece "generico" (e "generic" legado).
-     * ✅ Se não vier _source, tenta inferir por estrutura do _parsed.
-     */
     public function resolveSource(AnaliseRun $run): string
     {
-        $source = data_get($run->report, '_source');
+        $source = $run->source_extracted ?? null;
 
         if (is_string($source) && trim($source) !== '') {
             $source = strtolower(trim($source));
@@ -201,19 +225,6 @@ class RelatoriosProcessados extends Page implements HasTable
             if (in_array($source, ['whatsapp', 'instagram', 'generico'], true)) {
                 return $source;
             }
-        }
-
-        // fallback para runs antigos sem _source salvo:
-        if (
-            data_get($run->report, '_parsed.first_name') !== null ||
-            data_get($run->report, '_parsed.account_identifier') !== null ||
-            data_get($run->report, '_parsed.registration_ip') !== null
-        ) {
-            return 'instagram';
-        }
-
-        if (is_array(data_get($run->report, '_parsed.events'))) {
-            return 'generico';
         }
 
         return 'whatsapp';
@@ -241,7 +252,7 @@ class RelatoriosProcessados extends Page implements HasTable
     #[On('delete-run')]
     public function deleteRun(int $runId): void
     {
-        $run = AnaliseRun::find($runId);
+        $run = AnaliseRun::query()->find($runId);
 
         if (! $run) {
             Notification::make()->title('Relatório não encontrado')->danger()->send();

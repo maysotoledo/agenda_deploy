@@ -64,11 +64,12 @@
                                 <span class="font-medium text-gray-700">Gerado em:</span>
                                 {{ $report['generated_at'] }}
                             </div>
+
                             <div class="rounded-xl border p-4">
-                    <div class="text-sm text-gray-500">
-                        UTC convertido para: GMT-3 (Brasilia)
-                    </div>
-                </div>
+                                <div class="text-sm text-gray-500">
+                                    UTC convertido para: GMT-3 (Brasilia)
+                                </div>
+                            </div>
                         @endif
 
                         @if(! empty($report['file_hash']))
@@ -122,7 +123,87 @@
                             {{ number_format($report['asymmetric_contacts_count'] ?? 0, 0, ',', '.') }}
                         </div>
                     </button>
-                </div>
+
+                    {{-- ✅ NOVO CARD: Último IP (Connection) --}}
+                    <div class="rounded-xl border p-4">
+                        <div class="text-sm text-gray-500">Último IP (Connection)</div>
+
+                        <div class="mt-2 space-y-1">
+                            <div class="font-mono text-sm break-all">
+                                {{ $report['connection_summary']['last_ip'] ?? '-' }}
+                            </div>
+
+                            <div class="text-sm font-semibold text-gray-800">
+                                {{ $report['connection_summary']['last_seen'] ?? '-' }}
+                            </div>
+                        </div>
+                    </div>
+
+                    {{-- ✅ CARD: Connection (se existir) --}}
+                    {{-- @if (!empty($report['connection_summary']))
+                        <div class="rounded-xl border p-4 md:col-span-2 xl:col-span-3">
+                            <div class="text-sm text-gray-500">Connection</div>
+
+                            <div class="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                                <div class="rounded-lg border p-3">
+                                    <div class="text-xs text-gray-500">Device Id</div>
+                                    <div class="mt-1 font-mono text-sm break-all">
+                                        {{ $report['connection_summary']['device_id'] ?? '-' }}
+                                    </div>
+                                </div>
+
+                                <div class="rounded-lg border p-3">
+                                    <div class="text-xs text-gray-500">Device Type</div>
+                                    <div class="mt-1 text-sm font-semibold">
+                                        {{ $report['connection_summary']['device_type'] ?? '-' }}
+                                    </div>
+                                </div>
+
+                                <div class="rounded-lg border p-3">
+                                    <div class="text-xs text-gray-500">App Version</div>
+                                    <div class="mt-1 text-sm break-all">
+                                        {{ $report['connection_summary']['app_version'] ?? '-' }}
+                                    </div>
+                                </div>
+
+                                <div class="rounded-lg border p-3">
+                                    <div class="text-xs text-gray-500">Connection State</div>
+                                    <div class="mt-1 text-sm font-semibold">
+                                        {{ $report['connection_summary']['connection_state'] ?? '-' }}
+                                    </div>
+                                </div>
+
+                                <div class="rounded-lg border p-3">
+                                    <div class="text-xs text-gray-500">Service start (GMT-3)</div>
+                                    <div class="mt-1 text-sm font-semibold whitespace-nowrap">
+                                        {{ $report['connection_summary']['service_start'] ?? '-' }}
+                                    </div>
+                                </div>
+
+                                <div class="rounded-lg border p-3">
+                                    <div class="text-xs text-gray-500">Last seen (GMT-3)</div>
+                                    <div class="mt-1 text-sm font-semibold whitespace-nowrap">
+                                        {{ $report['connection_summary']['last_seen'] ?? '-' }}
+                                    </div>
+                                </div>
+
+                                <div class="rounded-lg border p-3 md:col-span-2">
+                                    <div class="text-xs text-gray-500">Device OS Build Number</div>
+                                    <div class="mt-1 text-sm break-all">
+                                        {{ $report['connection_summary']['device_os_build_number'] ?? '-' }}
+                                    </div>
+                                </div>
+
+                                <div class="rounded-lg border p-3 md:col-span-2 xl:col-span-4">
+                                    <div class="text-xs text-gray-500">Last IP</div>
+                                    <div class="mt-1 font-mono text-sm break-all">
+                                        {{ $report['connection_summary']['last_ip'] ?? '-' }}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    @endif
+                </div> --}}
             </div>
         </x-filament::section>
 
@@ -134,6 +215,7 @@
                 'cities' => ['label' => 'Cidades', 'icon' => 'heroicon-o-map-pin'],
                 'residencial' => ['label' => 'Noturno (23–06)', 'icon' => 'heroicon-o-moon'],
                 'movel' => ['label' => 'Móvel', 'icon' => 'heroicon-o-device-phone-mobile'],
+                'groups' => ['label' => 'Grupos', 'icon' => 'heroicon-o-user-group'],
             ];
 
             $counts = [
@@ -143,6 +225,7 @@
                 'cities' => count($report['city_stats_rows'] ?? []),
                 'residencial' => (int) ($report['night_total_events'] ?? 0),
                 'movel' => (int) ($report['mobile_total_events'] ?? 0),
+                'groups' => count($report['groups_rows'] ?? []),
             ];
         @endphp
 
@@ -223,9 +306,16 @@
                     @include('filament.pages.partials.sheet-movel', ['report' => $report])
                 </x-filament::section>
             @endif
+
+            @if ($tab === 'groups')
+                <x-filament::section heading="Grupos">
+                    @include('filament.pages.partials.sheet-groups', [
+                        'rows' => $report['groups_rows'] ?? [],
+                    ])
+                </x-filament::section>
+            @endif
         </div>
     @endif
 
     <x-filament-actions::modals />
-
 </x-filament-panels::page>

@@ -33,7 +33,7 @@ class AuditLogResource extends Resource
 
     public static function getNavigationLabel(): string
     {
-        return 'Auditoria (Logs)';
+        return 'Logs de Auditoria';
     }
 
     public static function getModelLabel(): string
@@ -92,33 +92,6 @@ class AuditLogResource extends Resource
                     })
                     ->sortable(),
 
-                // ✅ NOVA COLUNA: ORIGEM (resource/page ou route)
-                TextColumn::make('origem')
-                    ->label('Origem')
-                    ->state(function (AuditLog $record): string {
-                        $panel = data_get($record->meta, 'filament.panel');
-                        $res = data_get($record->meta, 'filament.resource_slug');
-                        $page = data_get($record->meta, 'filament.page');
-
-                        $parts = array_values(array_filter([
-                            $panel ? "panel:{$panel}" : null,
-                            $res ? "resource:{$res}" : null,
-                            $page ? "page:{$page}" : null,
-                        ]));
-
-                        if (! empty($parts)) {
-                            return implode(' | ', $parts);
-                        }
-
-                        return $record->route ?? '-';
-                    })
-                    ->searchable(query: function (Builder $query, string $search): Builder {
-                        return $query
-                            ->where('route', 'like', "%{$search}%")
-                            ->orWhere('url', 'like', "%{$search}%");
-                    })
-                    ->wrap(),
-
                 TextColumn::make('user.name')
                     ->label('Usuário')
                     ->state(fn (AuditLog $record) => $record->user?->name ?? '—')
@@ -138,10 +111,11 @@ class AuditLogResource extends Resource
                     ->searchable()
                     ->copyable(),
 
+                // ✅ FIXO (visível por padrão)
                 TextColumn::make('model_type')
                     ->label('Model')
-                    ->toggleable(isToggledHiddenByDefault: true)
-                    ->searchable(),
+                    ->searchable()
+                    ->wrap(),
 
                 TextColumn::make('model_id')
                     ->label('ID')

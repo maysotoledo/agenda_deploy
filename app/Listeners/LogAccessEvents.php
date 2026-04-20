@@ -2,7 +2,7 @@
 
 namespace App\Listeners;
 
-use App\Models\AuditLog;
+use App\Models\AccessLog;
 use Illuminate\Auth\Events\Failed;
 use Illuminate\Auth\Events\Login;
 use Illuminate\Auth\Events\Logout;
@@ -16,36 +16,29 @@ class LogAccessEvents
     {
         $ip = $this->request->ip();
         $ua = substr((string) $this->request->userAgent(), 0, 2000);
-        $route = optional($this->request->route())->getName();
 
         if ($event instanceof Login) {
-            AuditLog::create([
+            AccessLog::create([
                 'user_id' => $event->user?->id,
                 'email' => $event->user?->email,
-                'action' => 'login_success',
-                'route' => $route,
-                'method' => $this->request->method(),
-                'url' => $this->request->fullUrl(),
+                'event' => 'login_success',
                 'ip' => $ip,
                 'user_agent' => $ua,
-                'meta' => ['guard' => $event->guard],
                 'occurred_at' => now(),
+                'meta' => ['guard' => $event->guard],
             ]);
             return;
         }
 
         if ($event instanceof Logout) {
-            AuditLog::create([
+            AccessLog::create([
                 'user_id' => $event->user?->id,
                 'email' => $event->user?->email,
-                'action' => 'logout',
-                'route' => $route,
-                'method' => $this->request->method(),
-                'url' => $this->request->fullUrl(),
+                'event' => 'logout',
                 'ip' => $ip,
                 'user_agent' => $ua,
-                'meta' => ['guard' => $event->guard],
                 'occurred_at' => now(),
+                'meta' => ['guard' => $event->guard],
             ]);
             return;
         }
@@ -54,17 +47,14 @@ class LogAccessEvents
             $creds = (array) $event->credentials;
             $email = $creds['email'] ?? $creds['username'] ?? null;
 
-            AuditLog::create([
+            AccessLog::create([
                 'user_id' => $event->user?->id,
                 'email' => is_string($email) ? $email : null,
-                'action' => 'login_failed',
-                'route' => $route,
-                'method' => $this->request->method(),
-                'url' => $this->request->fullUrl(),
+                'event' => 'login_failed',
                 'ip' => $ip,
                 'user_agent' => $ua,
-                'meta' => ['guard' => $event->guard],
                 'occurred_at' => now(),
+                'meta' => ['guard' => $event->guard],
             ]);
         }
     }

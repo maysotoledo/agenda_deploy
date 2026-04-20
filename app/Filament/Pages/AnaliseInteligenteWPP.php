@@ -19,6 +19,7 @@ use Filament\Schemas\Schema;
 use Filament\Support\Enums\Width;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Livewire\Attributes\On;
 
 class AnaliseInteligenteWPP extends Page implements HasSchemas
@@ -44,7 +45,6 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
     public ?string $selectedContactType = null;
     public array $selectedContacts = [];
 
-    // ✅ NOVO: estado do modal de provedor (pra travar poll e montar o modal)
     public ?string $selectedProvider = null;
     public array $selectedProviderIps = [];
 
@@ -79,11 +79,19 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
         return $schema
             ->components([
                 FileUpload::make('html_file')
-                    ->label('Arquivo HTML (records.html)')
+                    ->label('Arquivo HTML (records.html) ou ZIP')
                     ->required()
                     ->disk('public')
                     ->directory('uploads/records-html')
-                    ->acceptedFileTypes(['text/html', 'text/plain', '.html', '.htm'])
+                    ->acceptedFileTypes([
+                        'text/html',
+                        'text/plain',
+                        'application/zip',
+                        'application/x-zip-compressed',
+                        '.html',
+                        '.htm',
+                        '.zip',
+                    ])
                     ->preserveFilenames()
                     ->maxSize(20_000),
             ])
@@ -102,7 +110,6 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
         $this->selectedContactType = null;
         $this->selectedContacts = [];
 
-        // ✅ reset modal provedor
         $this->selectedProvider = null;
         $this->selectedProviderIps = [];
 
@@ -118,10 +125,10 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
             return;
         }
 
-        $html = file_get_contents(Storage::disk('public')->path($storedPath));
+        $html = $this->resolveHtmlFromUpload($storedPath);
 
         if (! is_string($html) || trim($html) === '') {
-            Notification::make()->title('HTML vazio ou inválido')->danger()->send();
+            Notification::make()->title('HTML vazio, inválido ou ZIP sem records.html')->danger()->send();
             return;
         }
 
@@ -168,7 +175,7 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
 
         $run = DB::transaction(function () use ($parsed, $ipsMap) {
             $run = AnaliseRun::create([
-                'user_id' => auth()->id(), // ✅ NOVO: salva quem criou o relatório
+                'user_id' => auth()->id(),
                 'uuid' => (string) str()->uuid(),
                 'target' => $parsed['target'] ?? null,
                 'total_unique_ips' => count($ipsMap),
@@ -204,7 +211,6 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
 
     public function poll(): void
     {
-        // ✅ se algum modal estiver aberto, não re-renderiza (evita “matar” modal)
         if ($this->selectedContactType !== null) {
             return;
         }
@@ -236,7 +242,6 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
 
         if ($run->status === 'done' && $this->report === null) {
             $this->hydrateReportFromRun($run);
-
             Notification::make()->title('Relatório pronto')->success()->send();
         }
     }
@@ -252,10 +257,10 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
         $this->running = false;
         $this->report = null;
         $this->tab = 'timeline';
+
         $this->selectedContactType = null;
         $this->selectedContacts = [];
 
-        // ✅ reset modal provedor
         $this->selectedProvider = null;
         $this->selectedProviderIps = [];
 
@@ -339,7 +344,6 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
             ]));
     }
 
-    // ✅ NOVO: escuta o evento disparado pela tabela de provedores
     #[On('open-provider-ips-modal')]
     public function openProviderIpsModal(string $provider): void
     {
@@ -351,7 +355,6 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
         $this->mountAction('providerIpsModal');
     }
 
-    // ✅ NOVO: modal de IPs do provedor
     public function providerIpsModal(): Action
     {
         return Action::make('providerIpsModal')
@@ -366,11 +369,88 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
             ]));
     }
 
-    // ✅ quando fechar, libera o poll novamente
     protected function closeProviderModalState(): void
     {
-        // Se você quiser manter o provedor selecionado após fechar, pode comentar as 2 linhas abaixo.
         $this->selectedProvider = null;
         $this->selectedProviderIps = [];
+    }
+
+    /**
+     * ✅ Resolve HTML de upload: aceita HTML direto ou ZIP (procura records.html).
+     */
+    private function resolveHtmlFromUpload(string $storedPath): ?string
+    {
+        $disk = Storage::disk('public');
+        $fullPath = $disk->path($storedPath);
+
+        if (Str::endsWith(Str::lower($storedPath), ['.html', '.htm'])) {
+            $html = @file_get_contents($fullPath);
+            return is_string($html) && trim($html) !== '' ? $html : null;
+        }
+
+        if (! Str::endsWith(Str::lower($storedPath), ['.zip'])) {
+            return null;
+        }
+
+        $tmpDir = storage_path('app/tmp/records-' . (string) Str::uuid());
+
+        if (! @mkdir($tmpDir, 0777, true) && ! is_dir($tmpDir)) {
+            return null;
+        }
+
+        try {
+            $zip = new \ZipArchive();
+            if ($zip->open($fullPath) !== true) {
+                return null;
+            }
+
+            $zip->extractTo($tmpDir);
+            $zip->close();
+
+            $iterator = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($tmpDir, \FilesystemIterator::SKIP_DOTS)
+            );
+
+            $recordsPath = null;
+
+            foreach ($iterator as $file) {
+                if ($file->isFile() && Str::lower($file->getFilename()) === 'records.html') {
+                    $recordsPath = $file->getPathname();
+                    break;
+                }
+            }
+
+            if (! $recordsPath || ! file_exists($recordsPath)) {
+                return null;
+            }
+
+            $html = @file_get_contents($recordsPath);
+
+            return is_string($html) && trim($html) !== '' ? $html : null;
+        } finally {
+            $this->deleteDirectoryRecursive($tmpDir);
+        }
+    }
+
+    private function deleteDirectoryRecursive(string $dir): void
+    {
+        if (! is_dir($dir)) {
+            return;
+        }
+
+        $it = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST
+        );
+
+        foreach ($it as $file) {
+            if ($file->isDir()) {
+                @rmdir($file->getPathname());
+            } else {
+                @unlink($file->getPathname());
+            }
+        }
+
+        @rmdir($dir);
     }
 }

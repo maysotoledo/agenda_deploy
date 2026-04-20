@@ -27,6 +27,12 @@ class ReportAggregator
             ? count($asymmetricContacts)
             : $this->extractAsymmetricContactsCount($parsed);
 
+        // ✅ GRUPOS (vira groups_rows)
+        $groupsRows = $this->buildGroupsRows($parsed['groups'] ?? [], $tz);
+
+        // ✅ CONNECTION (vira connection_summary)
+        $connectionSummary = $this->buildConnectionSummary($parsed['connection_info'] ?? [], $tz);
+
         $timelineRows = [];
         $uniqueIpAgg = [];
         $providerStatsAgg = [];
@@ -41,16 +47,12 @@ class ReportAggregator
 
         foreach ($events as $e) {
             $ipBase = $e['ip'] ?? null;
-            if (! $ipBase) {
-                continue;
-            }
+            if (! $ipBase) continue;
 
             $ipDisplay = $e['ip_with_port'] ?? $ipBase;
 
             $timeUtc = $this->toCarbonUtc($e['time_utc'] ?? null);
-            if (! $timeUtc) {
-                continue;
-            }
+            if (! $timeUtc) continue;
 
             $timeLocal = $timeUtc->copy()->setTimezone($tz);
 
@@ -58,20 +60,15 @@ class ReportAggregator
 
             $provider = trim(($info['isp'] ?? '') ?: ($info['org'] ?? ''));
             $provider = preg_replace('/\s+/u', ' ', $provider ?? '') ?? '';
-            if ($provider === '') {
-                $provider = 'Desconhecido';
-            }
+            if ($provider === '') $provider = 'Desconhecido';
 
             $city = trim((string) ($info['city'] ?? ''));
             $city = preg_replace('/\s+/u', ' ', $city ?? '') ?? '';
-            if ($city === '') {
-                $city = 'Desconhecida';
-            }
+            if ($city === '') $city = 'Desconhecida';
 
             $mobile = (bool) ($info['mobile'] ?? false);
             $type = $mobile ? 'Móvel' : 'Residencial';
 
-            // ✅ Timeline mostra IP:PORT quando existir
             $timelineRows[] = [
                 'datetime' => $timeLocal->format('Y-m-d H:i:s'),
                 'ip' => $ipDisplay,
@@ -80,7 +77,6 @@ class ReportAggregator
                 'type' => $type,
             ];
 
-            // ✅ Unique IP por IP base
             $uniqueIpAgg[$ipBase] ??= [
                 'ip' => $ipBase,
                 'provider' => $provider,
@@ -105,9 +101,7 @@ class ReportAggregator
             $providerStatsAgg[$provider]['occurrences']++;
             $providerStatsAgg[$provider]['unique_ips'][$ipBase] = true;
             $providerStatsAgg[$provider]['cities'][$city] = true;
-            if ($mobile) {
-                $providerStatsAgg[$provider]['mobile_occurrences']++;
-            }
+            if ($mobile) $providerStatsAgg[$provider]['mobile_occurrences']++;
             if ($timeLocal->greaterThan($providerStatsAgg[$provider]['last_seen'])) {
                 $providerStatsAgg[$provider]['last_seen'] = $timeLocal;
             }
@@ -123,14 +117,11 @@ class ReportAggregator
             $cityStatsAgg[$city]['occurrences']++;
             $cityStatsAgg[$city]['unique_ips'][$ipBase] = true;
             $cityStatsAgg[$city]['providers'][$provider] = true;
-            if ($mobile) {
-                $cityStatsAgg[$city]['mobile_occurrences']++;
-            }
+            if ($mobile) $cityStatsAgg[$city]['mobile_occurrences']++;
             if ($timeLocal->greaterThan($cityStatsAgg[$city]['last_seen'])) {
                 $cityStatsAgg[$city]['last_seen'] = $timeLocal;
             }
 
-            // ✅ provider_ip_map agora agrupa por IP:PORT (quando existir)
             $providerIpMap[$provider] ??= [];
             $providerIpMap[$provider][$ipDisplay] ??= [
                 'ip' => $ipDisplay,
@@ -222,7 +213,7 @@ class ReportAggregator
             usort($list, fn ($a, $b) => ($b['count'] <=> $a['count']) ?: ($b['last_seen']->timestamp <=> $a['last_seen']->timestamp));
 
             $providerIpMapOut[$prov] = array_map(fn ($r) => [
-                'ip' => $r['ip'], // ✅ ip:port (ou [ipv6]:port)
+                'ip' => $r['ip'],
                 'count' => (int) $r['count'],
                 'last_seen' => $r['last_seen']->format('Y-m-d H:i:s'),
                 'city' => $r['city'] ?? '-',
@@ -246,6 +237,12 @@ class ReportAggregator
             'symmetric_contacts' => $symmetricContacts,
             'asymmetric_contacts' => $asymmetricContacts,
 
+            // ✅ NOVO
+            'groups_rows' => $groupsRows,
+
+            // ✅ NOVO
+            'connection_summary' => $connectionSummary,
+
             'timeline_rows' => $timelineRows,
             'unique_ip_rows' => $uniqueIpRows,
             'provider_stats_rows' => $providerStatsRows,
@@ -267,6 +264,63 @@ class ReportAggregator
         ];
     }
 
+    private function buildGroupsRows(array $groups, string $tz): array
+    {
+        $rows = [];
+
+        $owned = is_array($groups['owned'] ?? null) ? $groups['owned'] : [];
+        $part = is_array($groups['participating'] ?? null) ? $groups['participating'] : [];
+
+        $push = function (array $g, string $tipo) use (&$rows, $tz) {
+            $createdUtc = $g['creation_utc'] ?? null;
+            $createdLocal = null;
+
+            if ($createdUtc instanceof Carbon) {
+                $createdLocal = $createdUtc->copy()->setTimezone($tz)->format('Y-m-d H:i:s');
+            }
+
+            $rows[] = [
+                'tipo' => $tipo,
+                'id' => $g['id'] ?? null,
+                'criacao' => $createdLocal,
+                'membros' => is_numeric($g['size'] ?? null) ? (int) $g['size'] : null,
+                'assunto' => $g['subject'] ?? null,
+                'descricao' => $g['description'] ?? null,
+            ];
+        };
+
+        foreach ($owned as $g) $push((array) $g, 'Criado (Owned)');
+        foreach ($part as $g) $push((array) $g, 'Participa');
+
+        usort($rows, fn ($a, $b) => strcmp((string) ($b['criacao'] ?? ''), (string) ($a['criacao'] ?? '')));
+
+        return $rows;
+    }
+
+    private function buildConnectionSummary(array $conn, string $tz): array
+    {
+        $serviceStartLocal = null;
+        if (($conn['service_start_utc'] ?? null) instanceof Carbon) {
+            $serviceStartLocal = $conn['service_start_utc']->copy()->setTimezone($tz)->format('Y-m-d H:i:s');
+        }
+
+        $lastSeenLocal = null;
+        if (($conn['last_seen_utc'] ?? null) instanceof Carbon) {
+            $lastSeenLocal = $conn['last_seen_utc']->copy()->setTimezone($tz)->format('Y-m-d H:i:s');
+        }
+
+        return array_filter([
+            'device_id' => $conn['device_id'] ?? null,
+            'service_start' => $serviceStartLocal,
+            'device_type' => $conn['device_type'] ?? null,
+            'app_version' => $conn['app_version'] ?? null,
+            'device_os_build_number' => $conn['device_os_build_number'] ?? null,
+            'connection_state' => $conn['connection_state'] ?? null,
+            'last_seen' => $lastSeenLocal,
+            'last_ip' => $conn['last_ip'] ?? null,
+        ], fn ($v) => $v !== null && $v !== '');
+    }
+
     private function toCarbonUtc(mixed $value): ?Carbon
     {
         if ($value instanceof Carbon) return $value->copy()->setTimezone('UTC');
@@ -279,61 +333,43 @@ class ReportAggregator
 
     private function extractGeneratedAt(array $parsed, string $tz): ?string
     {
-        $candidates = [
+        foreach ([
             $parsed['generated_at'] ?? null,
             $parsed['generatedAt'] ?? null,
             $parsed['meta']['generated_at'] ?? null,
             $parsed['summary']['generated_at'] ?? null,
-        ];
-
-        foreach ($candidates as $value) {
+        ] as $value) {
             $dt = $this->toCarbonUtc($value);
-
-            if ($dt) {
-                return $dt->copy()->setTimezone($tz)->format('d/m/Y - H:i:s');
-            }
-
-            if (is_string($value) && trim($value) !== '') {
-                return trim($value);
-            }
+            if ($dt) return $dt->copy()->setTimezone($tz)->format('d/m/Y - H:i:s');
+            if (is_string($value) && trim($value) !== '') return trim($value);
         }
-
         return null;
     }
 
     private function extractFileHash(array $parsed): ?string
     {
-        $candidates = [
+        foreach ([
             $parsed['file_hash'] ?? null,
             $parsed['sha256'] ?? null,
             $parsed['hash'] ?? null,
             $parsed['meta']['file_hash'] ?? null,
             $parsed['meta']['sha256'] ?? null,
             $parsed['summary']['file_hash'] ?? null,
-        ];
-
-        foreach ($candidates as $value) {
-            if (is_string($value) && trim($value) !== '') {
-                return trim($value);
-            }
+        ] as $value) {
+            if (is_string($value) && trim($value) !== '') return trim($value);
         }
-
         return null;
     }
 
     private function extractDevice(array $parsed): ?string
     {
-        $candidates = [
+        foreach ([
             $parsed['device'] ?? null,
             $parsed['device_name'] ?? null,
             $parsed['device_info'] ?? null,
             $parsed['summary']['device'] ?? null,
-        ];
-
-        foreach ($candidates as $value) {
-            if (is_string($value) && trim($value) !== '') {
-                return trim($value);
-            }
+        ] as $value) {
+            if (is_string($value) && trim($value) !== '') return trim($value);
 
             if (is_array($value)) {
                 $parts = array_filter([
@@ -343,33 +379,23 @@ class ReportAggregator
                     $value['device'] ?? null,
                 ], fn ($v) => is_string($v) && trim($v) !== '');
 
-                if ($parts) {
-                    return implode(' - ', array_unique(array_map('trim', $parts)));
-                }
+                if ($parts) return implode(' - ', array_unique(array_map('trim', $parts)));
             }
         }
-
         return null;
     }
 
     private function extractPeriodLabel(array $parsed, array $events, string $tz): ?string
     {
-        $start = $parsed['range_start_utc'] ?? null;
-        $end = $parsed['range_end_utc'] ?? null;
-
-        $start = $this->toCarbonUtc($start);
-        $end = $this->toCarbonUtc($end);
+        $start = $this->toCarbonUtc($parsed['range_start_utc'] ?? null);
+        $end = $this->toCarbonUtc($parsed['range_end_utc'] ?? null);
 
         if (! $start || ! $end) {
             $times = [];
-
             foreach ($events as $e) {
                 $dt = $this->toCarbonUtc($e['time_utc'] ?? null);
-                if ($dt) {
-                    $times[] = $dt;
-                }
+                if ($dt) $times[] = $dt;
             }
-
             if ($times) {
                 usort($times, fn ($a, $b) => $a->timestamp <=> $b->timestamp);
                 $start = $start ?: $times[0];
@@ -392,16 +418,9 @@ class ReportAggregator
             $parsed['symmetric_contacts_count'] ?? null,
             $parsed['symmetric_contacts_total'] ?? null,
         ] as $value) {
-            if (is_numeric($value)) {
-                return (int) $value;
-            }
+            if (is_numeric($value)) return (int) $value;
         }
-
-        if (isset($parsed['symmetric_contacts']) && is_array($parsed['symmetric_contacts'])) {
-            return count($parsed['symmetric_contacts']);
-        }
-
-        return 0;
+        return is_array($parsed['symmetric_contacts'] ?? null) ? count($parsed['symmetric_contacts']) : 0;
     }
 
     private function extractAsymmetricContactsCount(array $parsed): int
@@ -410,15 +429,8 @@ class ReportAggregator
             $parsed['asymmetric_contacts_count'] ?? null,
             $parsed['asymmetric_contacts_total'] ?? null,
         ] as $value) {
-            if (is_numeric($value)) {
-                return (int) $value;
-            }
+            if (is_numeric($value)) return (int) $value;
         }
-
-        if (isset($parsed['asymmetric_contacts']) && is_array($parsed['asymmetric_contacts'])) {
-            return count($parsed['asymmetric_contacts']);
-        }
-
-        return 0;
+        return is_array($parsed['asymmetric_contacts'] ?? null) ? count($parsed['asymmetric_contacts']) : 0;
     }
 }
