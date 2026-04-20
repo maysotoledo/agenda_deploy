@@ -41,6 +41,9 @@ class RecordsHtmlParser
         // ✅ CONNECTION (robusto: Last seen / Last IP)
         $connectionInfo = $this->extractConnectionInfo($dom);
 
+        // ✅ BILHETAGEM (robusto por texto)
+        $messageLog = $this->extractMessageLog($dom);
+
         [$rangeStartUtc, $rangeEndUtc] = $this->parseDateRangeUtc($dateRange);
         $generatedAtUtc = $this->parseUtc($generated);
 
@@ -72,6 +75,9 @@ class RecordsHtmlParser
 
             // ✅ NOVO
             'connection_info' => $connectionInfo,
+
+            // ✅ NOVO
+            'message_log' => $messageLog,
         ];
     }
 
@@ -137,7 +143,7 @@ class RecordsHtmlParser
         $device = null;
         if ($manufacturer && $model) $device = "{$manufacturer} - {$model}";
         elseif ($model) $device = $model;
-       	elseif ($manufacturer) $device = $manufacturer;
+        elseif ($manufacturer) $device = $manufacturer;
 
         return [
             'device' => $device,
@@ -317,6 +323,27 @@ class RecordsHtmlParser
         }
     }
 
+    /**
+     * ✅ parse UTC tolerante (alguns logs variam formato)
+     */
+    private function parseUtcFlexible(?string $value): ?Carbon
+    {
+        $value = trim((string) $value);
+        if ($value === '') return null;
+
+        $value = str_replace(' UTC', '', $value);
+
+        try {
+            return Carbon::createFromFormat('Y-m-d H:i:s', $value, 'UTC');
+        } catch (\Throwable) {}
+
+        try {
+            return Carbon::parse($value, 'UTC');
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
     private function parseDateRangeUtc(?string $range): array
     {
         $range = trim((string) $range);
@@ -392,7 +419,6 @@ class RecordsHtmlParser
             $current = null;
         };
 
-        // regex (linha única, com ou sem espaço)
         $rxId = '/\bID\s*([0-9]{10,})\b/u';
         $rxCreation = '/\bCreation\s*([0-9]{4}-[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2}:[0-9]{2})\s*UTC\b/iu';
         $rxSize = '/\bSize\s*([0-9]{1,6})\b/u';
@@ -402,7 +428,6 @@ class RecordsHtmlParser
         for ($i = 0; $i < count($lines); $i++) {
             $line = $lines[$i];
 
-            // Seções
             if (stripos($line, 'Owned Groups') === 0) {
                 $push();
                 $section = 'owned';
@@ -419,7 +444,6 @@ class RecordsHtmlParser
                 continue;
             }
 
-            // Formato label em uma linha e valor na próxima
             if (strcasecmp($line, 'ID') === 0) {
                 $id = $lines[$i + 1] ?? null;
                 if (is_string($id) && preg_match('/^[0-9]{10,}$/', $id)) {
@@ -462,7 +486,6 @@ class RecordsHtmlParser
                 continue;
             }
 
-            // Linha única: inicia grupo por ID
             if (preg_match($rxId, $line, $m)) {
                 $push();
                 $current = $newGroup();
@@ -473,7 +496,6 @@ class RecordsHtmlParser
                 continue;
             }
 
-            // Linha única: demais campos
             if (preg_match($rxCreation, $line, $m)) {
                 $current['creation_utc'] = $this->parseUtc($m[1] . ' UTC');
             }
@@ -505,7 +527,6 @@ class RecordsHtmlParser
     {
         $sectionHtml = $this->extractPropertySectionHtml($dom, 'property-connection_info');
 
-        // fallback: às vezes não tem id certinho. Tentamos achar pelo texto "Connection"
         if ($sectionHtml === '') {
             $xp = new \DOMXPath($dom);
             $maybe = $xp->query("//div[contains(@class,'t i')][normalize-space(text())='Connection']")?->item(0);
@@ -542,7 +563,6 @@ class RecordsHtmlParser
             'last_ip' => null,
         ];
 
-        // 1) label em uma linha + valor na próxima (mais comum no seu exemplo)
         for ($i = 0; $i < count($lines); $i++) {
             $label = mb_strtolower(preg_replace('/\s+/u', ' ', $lines[$i]) ?? $lines[$i]);
 
@@ -558,7 +578,6 @@ class RecordsHtmlParser
             if ($label === 'last ip' && $next) $out['last_ip'] = $next;
         }
 
-        // 2) fallback regex no texto inteiro (pega mesmo se vier em linha única)
         if ($out['last_seen_utc'] === null) {
             if (preg_match('/Last\s*seen\s*([0-9]{4}-[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2}:[0-9]{2})\s*UTC/i', $txt, $m)) {
                 $out['last_seen_utc'] = $this->parseUtc($m[1] . ' UTC');
@@ -572,5 +591,202 @@ class RecordsHtmlParser
         }
 
         return array_filter($out, fn ($v) => $v !== null && $v !== '');
+    }
+
+    /**
+     * ✅ BILHETAGEM (Message Log) por texto (não depende do DOM estruturado)
+     */
+    private function extractMessageLog(\DOMDocument $dom): array
+    {
+        $ids = [
+            'property-message_log',
+            'property-message_log_info',
+            'property-messages_log',
+            'property-billing_info',
+            'property-bilhetagem',
+        ];
+
+        $sectionHtml = '';
+        foreach ($ids as $id) {
+            $sectionHtml = $this->extractPropertySectionHtml($dom, $id);
+            if (trim($sectionHtml) !== '') break;
+        }
+
+        if (trim($sectionHtml) === '') {
+            $xp = new \DOMXPath($dom);
+
+            $maybe = $xp->query("//div[contains(@class,'t i')][
+                contains(translate(normalize-space(text()), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'message log')
+                or contains(translate(normalize-space(text()), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'bilhet')
+                or contains(translate(normalize-space(text()), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'messages')
+            ]")?->item(0);
+
+            if ($maybe instanceof \DOMElement) {
+                $parent = $maybe->parentNode instanceof \DOMElement ? $maybe->parentNode : null;
+                if ($parent) {
+                    $sectionHtml = $dom->saveHTML($parent) ?: '';
+                }
+            }
+        }
+
+        if (trim($sectionHtml) === '') return [];
+
+        $sectionHtml = preg_replace('/<div[^>]*class="p"[^>]*>\s*<\/div>/i', "\n", $sectionHtml) ?? $sectionHtml;
+        $sectionHtml = preg_replace('/<br\s*\/?>/i', "\n", $sectionHtml) ?? $sectionHtml;
+
+        $txt = html_entity_decode(strip_tags($sectionHtml), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $txt = preg_replace('/[ \t\r]+/', ' ', $txt) ?? '';
+        $txt = preg_replace("/\n+/", "\n", $txt) ?? '';
+        $txt = trim($txt);
+
+        $lines = array_values(array_filter(array_map('trim', explode("\n", $txt)), fn ($l) => $l !== ''));
+
+        $rows = [];
+        $current = null;
+
+        $newRow = fn () => [
+            'timestamp_utc' => null,
+            'message_id' => null,
+            'sender' => null,
+            'recipient' => null,
+            'sender_ip' => null,
+            'sender_port' => null,
+            'type' => null,
+        ];
+
+        $push = function () use (&$rows, &$current) {
+            if (! is_array($current)) {
+                $current = null;
+                return;
+            }
+
+            $hasRecipient = ! empty(trim((string) ($current['recipient'] ?? '')));
+            $hasTs = $current['timestamp_utc'] instanceof Carbon;
+
+            if ($hasRecipient || $hasTs) {
+                $rows[] = $current;
+            }
+
+            $current = null;
+        };
+
+        $rxUtc = '/\b([0-9]{4}-[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2}:[0-9]{2})\s*UTC\b/i';
+        $rxRecipient = '/\bRecipient\s*([0-9]{10,16})\b/i';
+        $rxSender = '/\bSender\s*(.+)$/i';
+        $rxMessageId = '/\bMessage\s*ID\s*([^\s]+)\b/i';
+        $rxType = '/\bType\s*(.+)$/i';
+        $rxSenderIp = '/\bSender\s*IP\s*([^\s]+)\b/i';
+        $rxSenderPort = '/\bSender\s*Port\s*(\d{1,6})\b/i';
+
+        for ($i = 0; $i < count($lines); $i++) {
+            $line = $lines[$i];
+            $label = mb_strtolower(preg_replace('/\s+/u', ' ', $line) ?? $line);
+            $next = $lines[$i + 1] ?? null;
+
+            // início de registro por label/valor na próxima linha
+            if (in_array($label, ['timestamp', 'time', 'sent time', 'message time'], true)) {
+                $push();
+                $current = $newRow();
+                if ($next) {
+                    $current['timestamp_utc'] = $this->parseUtcFlexible($next);
+                    $i++;
+                }
+                continue;
+            }
+
+            // label/valor na próxima linha
+            if ($label === 'message id' && $next) {
+                $current ??= $newRow();
+                $current['message_id'] = trim($next) !== '' ? trim($next) : null;
+                $i++;
+                continue;
+            }
+
+            if ($label === 'sender' && $next) {
+                $current ??= $newRow();
+                $current['sender'] = trim($next) !== '' ? trim($next) : null;
+                $i++;
+                continue;
+            }
+
+            if ($label === 'recipient' && $next) {
+                $current ??= $newRow();
+                $current['recipient'] = trim($next) !== '' ? trim($next) : null;
+                $i++;
+                continue;
+            }
+
+            if ($label === 'sender ip' && $next) {
+                $current ??= $newRow();
+                $current['sender_ip'] = trim($next) !== '' ? trim($next) : null;
+                $i++;
+                continue;
+            }
+
+            if ($label === 'sender port' && $next) {
+                $current ??= $newRow();
+                $n = preg_replace('/\D+/', '', (string) $next) ?? '';
+                $current['sender_port'] = $n !== '' ? $n : null;
+                $i++;
+                continue;
+            }
+
+            if ($label === 'type' && $next) {
+                $current ??= $newRow();
+                $current['type'] = trim($next) !== '' ? trim($next) : null;
+                $i++;
+                continue;
+            }
+
+            // linha única: inicia por timestamp
+            if (preg_match($rxUtc, $line, $m)) {
+                $push();
+                $current = $newRow();
+                $current['timestamp_utc'] = $this->parseUtcFlexible($m[1] . ' UTC');
+            }
+
+            if (! $current) continue;
+
+            if (preg_match($rxMessageId, $line, $m)) {
+                $current['message_id'] = trim($m[1]) ?: null;
+            }
+
+            if (preg_match($rxRecipient, $line, $m)) {
+                $current['recipient'] = trim($m[1]) ?: null;
+            }
+
+            if (preg_match($rxSenderIp, $line, $m)) {
+                $current['sender_ip'] = trim($m[1]) ?: null;
+            }
+
+            if (preg_match($rxSenderPort, $line, $m)) {
+                $current['sender_port'] = trim($m[1]) ?: null;
+            }
+
+            if (preg_match($rxType, $line, $m)) {
+                $val = trim((string) $m[1]);
+                if ($val !== '') $current['type'] = $val;
+            }
+
+            // evita capturar Sender IP/Port como Sender
+            if (! str_contains($label, 'sender ip') && ! str_contains($label, 'sender port')) {
+                if (preg_match($rxSender, $line, $m)) {
+                    $val = trim((string) $m[1]);
+                    if ($val !== '' && ! preg_match('/^(ip|port)\b/i', $val)) {
+                        $current['sender'] = $val;
+                    }
+                }
+            }
+        }
+
+        $push();
+
+        usort($rows, function ($a, $b) {
+            $ta = ($a['timestamp_utc'] ?? null) instanceof Carbon ? $a['timestamp_utc']->timestamp : 0;
+            $tb = ($b['timestamp_utc'] ?? null) instanceof Carbon ? $b['timestamp_utc']->timestamp : 0;
+            return $tb <=> $ta;
+        });
+
+        return $rows;
     }
 }

@@ -57,30 +57,6 @@
     @if ($report)
         <x-filament::section class="mt-6" heading="Resumo da Análise">
             <div class="space-y-4">
-                @if(! empty($report['generated_at']) || ! empty($report['file_hash']))
-                    <div class="space-y-1 text-sm text-gray-600">
-                        @if(! empty($report['generated_at']))
-                            <div>
-                                <span class="font-medium text-gray-700">Gerado em:</span>
-                                {{ $report['generated_at'] }}
-                            </div>
-
-                            <div class="rounded-xl border p-4">
-                                <div class="text-sm text-gray-500">
-                                    UTC convertido para: GMT-3 (Brasilia)
-                                </div>
-                            </div>
-                        @endif
-
-                        @if(! empty($report['file_hash']))
-                            <div class="break-all">
-                                <span class="font-medium text-gray-700">Arquivo processado Hash SHA-256:</span>
-                                {{ $report['file_hash'] }}
-                            </div>
-                        @endif
-                    </div>
-                @endif
-
                 <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                     <div class="rounded-xl border p-4">
                         <div class="text-sm text-gray-500">Alvo</div>
@@ -124,86 +100,18 @@
                         </div>
                     </button>
 
-                    {{-- ✅ NOVO CARD: Último IP (Connection) --}}
                     <div class="rounded-xl border p-4">
                         <div class="text-sm text-gray-500">Último IP (Connection)</div>
-
                         <div class="mt-2 space-y-1">
                             <div class="font-mono text-sm break-all">
                                 {{ $report['connection_summary']['last_ip'] ?? '-' }}
                             </div>
-
                             <div class="text-sm font-semibold text-gray-800">
                                 {{ $report['connection_summary']['last_seen'] ?? '-' }}
                             </div>
                         </div>
                     </div>
-
-                    {{-- ✅ CARD: Connection (se existir) --}}
-                    {{-- @if (!empty($report['connection_summary']))
-                        <div class="rounded-xl border p-4 md:col-span-2 xl:col-span-3">
-                            <div class="text-sm text-gray-500">Connection</div>
-
-                            <div class="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                                <div class="rounded-lg border p-3">
-                                    <div class="text-xs text-gray-500">Device Id</div>
-                                    <div class="mt-1 font-mono text-sm break-all">
-                                        {{ $report['connection_summary']['device_id'] ?? '-' }}
-                                    </div>
-                                </div>
-
-                                <div class="rounded-lg border p-3">
-                                    <div class="text-xs text-gray-500">Device Type</div>
-                                    <div class="mt-1 text-sm font-semibold">
-                                        {{ $report['connection_summary']['device_type'] ?? '-' }}
-                                    </div>
-                                </div>
-
-                                <div class="rounded-lg border p-3">
-                                    <div class="text-xs text-gray-500">App Version</div>
-                                    <div class="mt-1 text-sm break-all">
-                                        {{ $report['connection_summary']['app_version'] ?? '-' }}
-                                    </div>
-                                </div>
-
-                                <div class="rounded-lg border p-3">
-                                    <div class="text-xs text-gray-500">Connection State</div>
-                                    <div class="mt-1 text-sm font-semibold">
-                                        {{ $report['connection_summary']['connection_state'] ?? '-' }}
-                                    </div>
-                                </div>
-
-                                <div class="rounded-lg border p-3">
-                                    <div class="text-xs text-gray-500">Service start (GMT-3)</div>
-                                    <div class="mt-1 text-sm font-semibold whitespace-nowrap">
-                                        {{ $report['connection_summary']['service_start'] ?? '-' }}
-                                    </div>
-                                </div>
-
-                                <div class="rounded-lg border p-3">
-                                    <div class="text-xs text-gray-500">Last seen (GMT-3)</div>
-                                    <div class="mt-1 text-sm font-semibold whitespace-nowrap">
-                                        {{ $report['connection_summary']['last_seen'] ?? '-' }}
-                                    </div>
-                                </div>
-
-                                <div class="rounded-lg border p-3 md:col-span-2">
-                                    <div class="text-xs text-gray-500">Device OS Build Number</div>
-                                    <div class="mt-1 text-sm break-all">
-                                        {{ $report['connection_summary']['device_os_build_number'] ?? '-' }}
-                                    </div>
-                                </div>
-
-                                <div class="rounded-lg border p-3 md:col-span-2 xl:col-span-4">
-                                    <div class="text-xs text-gray-500">Last IP</div>
-                                    <div class="mt-1 font-mono text-sm break-all">
-                                        {{ $report['connection_summary']['last_ip'] ?? '-' }}
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    @endif
-                </div> --}}
+                </div>
             </div>
         </x-filament::section>
 
@@ -213,9 +121,10 @@
                 'unique_ips' => ['label' => 'IPs Únicos', 'icon' => 'heroicon-o-globe-alt'],
                 'providers' => ['label' => 'Provedores', 'icon' => 'heroicon-o-building-office-2'],
                 'cities' => ['label' => 'Cidades', 'icon' => 'heroicon-o-map-pin'],
-                'residencial' => ['label' => 'Noturno (23–06)', 'icon' => 'heroicon-o-moon'],
+                'residencial' => ['label' => 'Noturno', 'icon' => 'heroicon-o-moon'],
                 'movel' => ['label' => 'Móvel', 'icon' => 'heroicon-o-device-phone-mobile'],
                 'groups' => ['label' => 'Grupos', 'icon' => 'heroicon-o-user-group'],
+                'bilhetagem' => ['label' => 'Bilhetagem', 'icon' => 'heroicon-o-chat-bubble-left-right'],
             ];
 
             $counts = [
@@ -226,35 +135,34 @@
                 'residencial' => (int) ($report['night_total_events'] ?? 0),
                 'movel' => (int) ($report['mobile_total_events'] ?? 0),
                 'groups' => count($report['groups_rows'] ?? []),
+                'bilhetagem' => count($report['bilhetagem_cards'] ?? []),
             ];
         @endphp
 
         <x-filament::section class="mt-6" heading="Planilhas">
-            <div class="overflow-x-auto">
-                <div class="inline-flex gap-2 min-w-max pb-1">
-                    @foreach($tabs as $key => $meta)
-                        @php $active = $tab === $key; @endphp
+            <div class="flex flex-wrap gap-2">
+                @foreach($tabs as $key => $meta)
+                    @php $active = $tab === $key; @endphp
 
-                        <x-filament::button
-                            type="button"
-                            size="sm"
-                            :color="$active ? 'primary' : 'gray'"
-                            :outlined="! $active"
-                            wire:click="$set('tab', '{{ $key }}')"
-                            class="whitespace-nowrap"
-                        >
-                            <span class="inline-flex items-center gap-2">
-                                <x-filament::icon :icon="$meta['icon']" class="h-4 w-4" />
-                                <span class="font-semibold">{{ $meta['label'] }}</span>
+                    <x-filament::button
+                        type="button"
+                        size="sm"
+                        :color="$active ? 'primary' : 'gray'"
+                        :outlined="! $active"
+                        wire:click="$set('tab', '{{ $key }}')"
+                        class="whitespace-nowrap"
+                    >
+                        <span class="inline-flex items-center gap-2">
+                            <x-filament::icon :icon="$meta['icon']" class="h-4 w-4" />
+                            <span class="font-semibold">{{ $meta['label'] }}</span>
 
-                                <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium
-                                    {{ $active ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700' }}">
-                                    {{ number_format($counts[$key] ?? 0, 0, ',', '.') }}
-                                </span>
+                            <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium
+                                {{ $active ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700' }}">
+                                {{ number_format($counts[$key] ?? 0, 0, ',', '.') }}
                             </span>
-                        </x-filament::button>
-                    @endforeach
-                </div>
+                        </span>
+                    </x-filament::button>
+                @endforeach
             </div>
         </x-filament::section>
 
@@ -296,7 +204,7 @@
             @endif
 
             @if ($tab === 'residencial')
-                <x-filament::section heading="Noturno (23–06)">
+                <x-filament::section heading="Noturno">
                     @include('filament.pages.partials.sheet-residencial', ['report' => $report])
                 </x-filament::section>
             @endif
@@ -311,6 +219,14 @@
                 <x-filament::section heading="Grupos">
                     @include('filament.pages.partials.sheet-groups', [
                         'rows' => $report['groups_rows'] ?? [],
+                    ])
+                </x-filament::section>
+            @endif
+
+            @if ($tab === 'bilhetagem')
+                <x-filament::section heading="Bilhetagem (por Recipient)">
+                    @include('filament.pages.partials.sheet-bilhetagem', [
+                        'cards' => $report['bilhetagem_cards'] ?? [],
                     ])
                 </x-filament::section>
             @endif

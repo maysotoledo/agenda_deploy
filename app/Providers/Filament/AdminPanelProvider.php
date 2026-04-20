@@ -2,7 +2,9 @@
 
 namespace App\Providers\Filament;
 
+use App\Filament\Pages\Auth\ChangePassword;
 use BezhanSalleh\FilamentShield\FilamentShieldPlugin;
+use Carbon\Carbon;
 use Filament\Http\Middleware\Authenticate;
 use Filament\Http\Middleware\AuthenticateSession;
 use Filament\Http\Middleware\DisableBladeIconComponents;
@@ -19,8 +21,6 @@ use Illuminate\Routing\Middleware\SubstituteBindings;
 use Illuminate\Session\Middleware\StartSession;
 use Illuminate\View\Middleware\ShareErrorsFromSession;
 use Saade\FilamentFullCalendar\FilamentFullCalendarPlugin;
-use App\Filament\Pages\Auth\ChangePassword;
-use Carbon\Carbon;
 
 class AdminPanelProvider extends PanelProvider
 {
@@ -32,6 +32,10 @@ class AdminPanelProvider extends PanelProvider
             ->path('admin')
             ->viteTheme('resources/css/filament/admin/theme.css')
             ->login()
+
+            // ✅ remove o campo de pesquisa do topo (global search)
+            ->globalSearch(false)
+
             ->databaseNotifications()
             ->databaseNotificationsPolling('5s')
             ->profile(ChangePassword::class) // ✅ usa página customizada para alterar senha
@@ -43,25 +47,19 @@ class AdminPanelProvider extends PanelProvider
                 'primary' => Color::Amber,
             ])
             // ✅ ORDEM DOS GRUPOS DO MENU
-             ->navigationGroups([
+            ->navigationGroups([
                 'Agenda',
-                 'Informação Telemática',
-                 'Análise Telemática',
-             ])
+                'Informação Telemática',
+                'Análise Telemática',
+            ])
             ->discoverResources(in: app_path('Filament/Resources'), for: 'App\\Filament\\Resources')
             ->discoverPages(in: app_path('Filament/Pages'), for: 'App\\Filament\\Pages')
             ->pages([
                 Dashboard::class,
             ])
-
-            // ❌ NÃO descubra widgets automaticamente (senão podem aparecer no Dashboard)
-            // ->discoverWidgets(in: app_path('Filament/Widgets'), for: 'App\\Filament\\Widgets')
-
-            // ✅ Somente widgets globais do painel
             ->widgets([
                 AccountWidget::class,
             ])
-
             ->middleware([
                 EncryptCookies::class,
                 AddQueuedCookiesToResponse::class,
@@ -79,7 +77,7 @@ class AdminPanelProvider extends PanelProvider
                     ->selectable()
                     ->editable()
                     ->config([
-                            'dayMaxEvents' => true,
+                        'dayMaxEvents' => true,
                     ]),
             ])
             ->authMiddleware([
@@ -88,6 +86,6 @@ class AdminPanelProvider extends PanelProvider
             ->bootUsing(function () {
                 app()->setLocale(config('app.locale'));
                 Carbon::setLocale(config('app.locale'));
-        });
+            });
     }
 }

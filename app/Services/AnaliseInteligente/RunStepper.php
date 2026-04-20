@@ -6,203 +6,160 @@ use App\Models\AnaliseRun;
 use App\Models\AnaliseRunIp;
 use App\Models\IpEnrichment;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 class RunStepper
 {
-    public function step(AnaliseRun $run, int $chunk = 5, float $maxSeconds = 1.5): int
+    /**
+     * Processa um "chunk" de IPs por chamada (poll).
+     * $sleepSeconds fica opcional — evite sleeps longos em request web.
+     */
+    public function step(AnaliseRun $run, int $chunkSize = 5, float $sleepSeconds = 0.0): void
     {
-        if ($run->status !== 'running') {
-            return 0;
+        // evita rodar em run finalizado
+        if (($run->status ?? null) !== 'running') {
+            return;
         }
 
-        $start = microtime(true);
+        $total = (int) ($run->total_unique_ips ?? 0);
+        if ($total <= 0) {
+            $this->finishRun($run);
+            return;
+        }
 
-        $rows = AnaliseRunIp::query()
+        // pega pendentes
+        $ips = AnaliseRunIp::query()
             ->where('analise_run_id', $run->id)
-            ->where('enriched', false)
-            ->orderBy('id')
-            ->limit($chunk)
+            ->where(function ($q) {
+                // compatível com boolean e/ou null
+                $q->where('enriched', false)->orWhereNull('enriched');
+            })
+            ->limit(max(1, $chunkSize))
             ->get();
 
-        if ($rows->isEmpty()) {
-            $this->finalizeIfDone($run);
-            return 0;
+        // se não tem mais pendente => finaliza
+        if ($ips->count() === 0) {
+            $this->finishRun($run);
+            return;
         }
 
-        $processedThisStep = 0;
+        $processedNow = 0;
 
-        foreach ($rows as $row) {
-            if ((microtime(true) - $start) >= $maxSeconds) {
-                break;
-            }
-
-            $ip = trim((string) $row->ip);
-
-            if ($ip === '') {
-                $row->enriched = true;
-                $row->save();
-                $processedThisStep++;
-                continue;
-            }
-
-            if ($this->isPrivateOrReservedIp($ip)) {
-                IpEnrichment::updateOrCreate(
-                    ['ip' => $ip],
-                    [
-                        'status' => 'fail',
-                        'message' => 'private_or_reserved_ip',
-                        'city' => null,
-                        'isp' => null,
-                        'org' => null,
-                        'mobile' => null,
-                        'fetched_at' => now(),
-                    ]
-                );
-
-                $row->enriched = true;
-                $row->save();
-                $processedThisStep++;
-                continue;
-            }
-
-            $existing = IpEnrichment::where('ip', $ip)->first();
-
-            // Só reaproveita se for recente + success + tiver provider preenchido
-            if ($this->shouldReuseExistingEnrichment($existing)) {
-                $row->enriched = true;
-                $row->save();
-                $processedThisStep++;
-                continue;
-            }
-
+        foreach ($ips as $row) {
             try {
-                $resp = Http::timeout(2)
-                    ->connectTimeout(1)
-                    ->retry(0, 0)
-                    ->get("http://ip-api.com/json/{$ip}", [
-                        'fields' => 'status,message,query,city,isp,org,mobile',
-                    ]);
-
-                $json = $resp->ok() ? $resp->json() : null;
-
-                if (! is_array($json) || (($json['status'] ?? null) !== 'success')) {
-                    IpEnrichment::updateOrCreate(
-                        ['ip' => $ip],
-                        [
-                            'status' => 'fail',
-                            'message' => is_array($json)
-                                ? ($json['message'] ?? 'lookup_failed')
-                                : ('http_' . $resp->status()),
-                            'city' => $existing?->city,
-                            'isp' => $existing?->isp,
-                            'org' => $existing?->org,
-                            'mobile' => $existing?->mobile,
-                            'fetched_at' => now(),
-                        ]
-                    );
-                } else {
-                    $isp = $this->cleanNullableString($json['isp'] ?? null);
-                    $org = $this->cleanNullableString($json['org'] ?? null);
-                    $city = $this->cleanNullableString($json['city'] ?? null);
-
-                    IpEnrichment::updateOrCreate(
-                        ['ip' => $ip],
-                        [
-                            'status' => ($isp || $org || $city) ? 'success' : 'fail',
-                            'message' => ($isp || $org || $city) ? null : 'empty_provider_response',
-                            'city' => $city,
-                            'isp' => $isp,
-                            'org' => $org,
-                            'mobile' => $json['mobile'] ?? false,
-                            'fetched_at' => now(),
-                        ]
-                    );
-                }
+                $this->processIpRow($row);
             } catch (\Throwable $e) {
-                IpEnrichment::updateOrCreate(
-                    ['ip' => $ip],
-                    [
-                        'status' => 'fail',
-                        'message' => 'exception:' . mb_substr($e->getMessage(), 0, 180),
-                        'city' => $existing?->city,
-                        'isp' => $existing?->isp,
-                        'org' => $existing?->org,
-                        'mobile' => $existing?->mobile,
-                        'fetched_at' => now(),
-                    ]
-                );
+                // NUNCA deixar travar o poll.
+                Log::warning('RunStepper: erro ao processar IP', [
+                    'run_id' => $run->id,
+                    'ip' => $row->ip ?? null,
+                    'error' => $e->getMessage(),
+                ]);
+
+                // marca como "processado" mesmo assim, para não ficar preso eternamente
+                $row->enriched = true;
+                $row->save();
             }
 
+            $processedNow++;
+
+            if ($sleepSeconds > 0) {
+                usleep((int) round($sleepSeconds * 1_000_000));
+            }
+        }
+
+        // atualiza contadores e progresso
+        $run->refresh();
+
+        $already = (int) ($run->processed_unique_ips ?? 0);
+        $newProcessed = $already + $processedNow;
+
+        if ($newProcessed > $total) $newProcessed = $total;
+
+        $run->processed_unique_ips = $newProcessed;
+        $run->progress = (int) floor(($newProcessed / $total) * 100);
+
+        // se chegou no fim, finaliza
+        if ($newProcessed >= $total) {
+            $this->finishRun($run);
+        } else {
+            $run->status = 'running';
+            $run->save();
+        }
+    }
+
+    private function processIpRow(AnaliseRunIp $row): void
+    {
+        $ip = trim((string) ($row->ip ?? ''));
+        if ($ip === '') {
             $row->enriched = true;
             $row->save();
-            $processedThisStep++;
+            return;
         }
 
-        $doneCount = AnaliseRunIp::where('analise_run_id', $run->id)
-            ->where('enriched', true)
-            ->count();
+        // tenta reutilizar enrichment existente
+        $existing = IpEnrichment::query()->where('ip', $ip)->first();
+        if ($existing) {
+            $row->enriched = true;
+            $row->save();
+            return;
+        }
 
-        $run->processed_unique_ips = $doneCount;
-        $run->progress = $run->total_unique_ips > 0
-            ? (int) floor(($doneCount / $run->total_unique_ips) * 100)
-            : 100;
+        // ✅ Enrichment via HTTP (não pode travar)
+        $data = $this->fetchEnrichment($ip);
 
-        $this->finalizeIfDone($run);
+        // fallback seguro
+        $payload = [
+            'ip' => $ip,
+            'city' => $data['city'] ?? null,
+            'isp' => $data['isp'] ?? null,
+            'org' => $data['org'] ?? null,
+            'mobile' => (bool) ($data['mobile'] ?? false),
+        ];
+
+        IpEnrichment::updateOrCreate(
+            ['ip' => $ip],
+            $payload,
+        );
+
+        $row->enriched = true;
+        $row->save();
+    }
+
+    private function fetchEnrichment(string $ip): array
+    {
+        // Exemplo usando ip-api.com (se você usa outro provedor, troque aqui)
+        // Importante: timeout curto + tratamento de erro
+        try {
+            $resp = Http::timeout(5)->retry(2, 150)->get('http://ip-api.com/json/' . $ip, [
+                'fields' => 'status,message,city,isp,org,mobile',
+            ]);
+
+            if (! $resp->successful()) {
+                return [];
+            }
+
+            $json = $resp->json();
+            if (! is_array($json)) return [];
+
+            if (($json['status'] ?? null) !== 'success') {
+                return [];
+            }
+
+            return $json;
+        } catch (\Throwable) {
+            return [];
+        }
+    }
+
+    private function finishRun(AnaliseRun $run): void
+    {
+        $total = (int) ($run->total_unique_ips ?? 0);
+
+        // garante progresso coerente
+        $run->processed_unique_ips = $total;
+        $run->progress = 100;
+        $run->status = 'done';
         $run->save();
-
-        return $processedThisStep;
-    }
-
-    private function finalizeIfDone(AnaliseRun $run): void
-    {
-        $pending = AnaliseRunIp::where('analise_run_id', $run->id)
-            ->where('enriched', false)
-            ->exists();
-
-        if (! $pending) {
-            $run->status = 'done';
-            $run->progress = 100;
-            $run->processed_unique_ips = $run->total_unique_ips;
-        }
-    }
-
-    private function isPrivateOrReservedIp(string $ip): bool
-    {
-        return filter_var(
-            $ip,
-            FILTER_VALIDATE_IP,
-            FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
-        ) === false;
-    }
-
-    private function shouldReuseExistingEnrichment(?IpEnrichment $existing): bool
-    {
-        if (! $existing) {
-            return false;
-        }
-
-        if (! $existing->fetched_at || ! $existing->fetched_at->gt(now()->subDays(30))) {
-            return false;
-        }
-
-        if (($existing->status ?? null) !== 'success') {
-            return false;
-        }
-
-        $isp = $this->cleanNullableString($existing->isp);
-        $org = $this->cleanNullableString($existing->org);
-
-        return filled($isp) || filled($org);
-    }
-
-    private function cleanNullableString(mixed $value): ?string
-    {
-        if (! is_string($value)) {
-            return null;
-        }
-
-        $value = trim($value);
-
-        return $value === '' ? null : $value;
     }
 }

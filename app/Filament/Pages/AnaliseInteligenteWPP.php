@@ -4,6 +4,7 @@ namespace App\Filament\Pages;
 
 use App\Models\AnaliseRun;
 use App\Models\AnaliseRunIp;
+use App\Models\Bilhetagem;
 use App\Models\IpEnrichment;
 use App\Services\AnaliseInteligente\RunStepper;
 use App\Services\AnaliseInteligente\Whatsapp\RecordsHtmlParser;
@@ -39,7 +40,7 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
     public int $progress = 0;
     public bool $running = false;
     public ?array $report = null;
-    public int $chunkSize = 5;
+    public int $chunkSize = 10; // pode subir sem medo agora
     public string $tab = 'timeline';
 
     public ?string $selectedContactType = null;
@@ -68,7 +69,6 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
         $this->form->fill();
 
         $runId = request()->integer('run');
-
         if ($runId) {
             $this->loadExistingRun($runId);
         }
@@ -79,8 +79,9 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
         return $schema
             ->components([
                 FileUpload::make('html_file')
-                    ->label('Arquivo HTML (records.html) ou ZIP')
+                    ->label('Arquivos (ZIP/HTML): log/bilhetagens')
                     ->required()
+                    ->multiple()
                     ->disk('public')
                     ->directory('uploads/records-html')
                     ->acceptedFileTypes([
@@ -100,13 +101,12 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
 
     public function gerar(): void
     {
-        if ($this->running) {
-            return;
-        }
+        if ($this->running) return;
 
         $this->report = null;
         $this->progress = 0;
         $this->tab = 'timeline';
+
         $this->selectedContactType = null;
         $this->selectedContacts = [];
 
@@ -114,51 +114,68 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
         $this->selectedProviderIps = [];
 
         $state = $this->form->getState();
-        $storedPath = $state['html_file'] ?? null;
+        $storedPaths = $state['html_file'] ?? null;
 
-        if (is_array($storedPath)) {
-            $storedPath = $storedPath[0] ?? null;
-        }
+        if (is_string($storedPaths)) $storedPaths = [$storedPaths];
 
-        if (! $storedPath || ! Storage::disk('public')->exists($storedPath)) {
-            Notification::make()->title('Arquivo não encontrado')->danger()->send();
+        if (! is_array($storedPaths) || count($storedPaths) === 0) {
+            Notification::make()->title('Envie pelo menos 1 arquivo')->danger()->send();
             return;
         }
 
-        $html = $this->resolveHtmlFromUpload($storedPath);
+        $disk = Storage::disk('public');
 
-        if (! is_string($html) || trim($html) === '') {
-            Notification::make()->title('HTML vazio, inválido ou ZIP sem records.html')->danger()->send();
+        $parsedList = [];
+        foreach ($storedPaths as $storedPath) {
+            if (! $storedPath || ! $disk->exists($storedPath)) continue;
+
+            $html = $this->resolveHtmlFromUpload($storedPath);
+            if (! is_string($html) || trim($html) === '') continue;
+
+            $parsedList[] = [
+                'stored_path' => $storedPath,
+                'parsed' => (new RecordsHtmlParser())->parse($html),
+            ];
+        }
+
+        if (count($parsedList) === 0) {
+            Notification::make()->title('Nenhum HTML válido ou ZIP com records.html')->danger()->send();
             return;
         }
 
-        $parsed = (new RecordsHtmlParser())->parse($html);
+        // ✅ principal = maior ip_events
+        $mainParsed = null;
+        $maxIps = -1;
 
-        $ipsMap = [];
-
-        foreach (($parsed['ip_events'] ?? []) as $event) {
-            $ip = trim((string) ($event['ip'] ?? ''));
-
-            if ($ip === '') {
-                continue;
+        foreach ($parsedList as $item) {
+            $parsed = (array) ($item['parsed'] ?? []);
+            $n = count($parsed['ip_events'] ?? []);
+            if ($n > $maxIps) {
+                $maxIps = $n;
+                $mainParsed = $parsed;
             }
+        }
+
+        if (! $mainParsed || count($mainParsed['ip_events'] ?? []) === 0) {
+            Notification::make()->title('Não encontrei arquivo com IPs (ip_events vazio)')->danger()->send();
+            return;
+        }
+
+        // monta IPs únicos
+        $ipsMap = [];
+        foreach (($mainParsed['ip_events'] ?? []) as $event) {
+            $ip = trim((string) ($event['ip'] ?? ''));
+            if ($ip === '') continue;
 
             $time = $event['time_utc'] ?? null;
             $ts = null;
 
-            if ($time instanceof \Carbon\Carbon) {
-                $ts = $time->timestamp;
-            } elseif (is_string($time) && trim($time) !== '') {
-                $ts = strtotime($time) ?: null;
-            } elseif (is_int($time)) {
-                $ts = $time;
-            }
+            if ($time instanceof \Carbon\Carbon) $ts = $time->timestamp;
+            elseif (is_string($time) && trim($time) !== '') $ts = strtotime($time) ?: null;
+            elseif (is_int($time)) $ts = $time;
 
             if (! isset($ipsMap[$ip])) {
-                $ipsMap[$ip] = [
-                    'occurrences' => 0,
-                    'last_seen_ts' => $ts,
-                ];
+                $ipsMap[$ip] = ['occurrences' => 0, 'last_seen_ts' => $ts];
             }
 
             $ipsMap[$ip]['occurrences']++;
@@ -169,22 +186,22 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
         }
 
         if (count($ipsMap) === 0) {
-            Notification::make()->title('Nenhum IP encontrado no HTML')->warning()->send();
+            Notification::make()->title('Nenhum IP encontrado no arquivo principal')->warning()->send();
             return;
         }
 
-        $run = DB::transaction(function () use ($parsed, $ipsMap) {
+        $run = DB::transaction(function () use ($mainParsed, $ipsMap, $parsedList) {
             $run = AnaliseRun::create([
                 'user_id' => auth()->id(),
-                'uuid' => (string) str()->uuid(),
-                'target' => $parsed['target'] ?? null,
+                'uuid' => (string) Str::uuid(),
+                'target' => $mainParsed['target'] ?? null,
                 'total_unique_ips' => count($ipsMap),
                 'processed_unique_ips' => 0,
                 'progress' => 0,
                 'status' => 'running',
                 'report' => [
                     '_source' => 'whatsapp',
-                    '_parsed' => $parsed,
+                    '_parsed' => $mainParsed,
                 ],
             ]);
 
@@ -200,6 +217,38 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
                 ]);
             }
 
+            // ✅ Salva bilhetagem de TODOS arquivos (dedupe por recipient|message_id|timestamp)
+            $seen = [];
+
+            foreach ($parsedList as $item) {
+                $p = (array) ($item['parsed'] ?? []);
+
+                foreach (($p['message_log'] ?? []) as $m) {
+                    $recipient = trim((string) ($m['recipient'] ?? ''));
+                    if ($recipient === '') continue;
+
+                    $tsUtc = $m['timestamp_utc'] ?? null;
+                    $tsKey = $tsUtc instanceof \Carbon\Carbon ? $tsUtc->format('Y-m-d H:i:s') : (is_string($tsUtc) ? trim($tsUtc) : null);
+
+                    $messageId = trim((string) ($m['message_id'] ?? ''));
+                    $key = $recipient . '|' . ($messageId !== '' ? $messageId : '-') . '|' . ($tsKey ?? '-');
+
+                    if (isset($seen[$key])) continue;
+                    $seen[$key] = true;
+
+                    Bilhetagem::create([
+                        'analise_run_id' => $run->id,
+                        'timestamp_utc' => $tsUtc instanceof \Carbon\Carbon ? $tsUtc : null,
+                        'message_id' => $messageId !== '' ? $messageId : null,
+                        'sender' => $m['sender'] ?? null,
+                        'recipient' => $recipient,
+                        'sender_ip' => $m['sender_ip'] ?? null,
+                        'sender_port' => $m['sender_port'] ?? null,
+                        'type' => $m['type'] ?? null,
+                    ]);
+                }
+            }
+
             return $run;
         });
 
@@ -211,31 +260,20 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
 
     public function poll(): void
     {
-        if ($this->selectedContactType !== null) {
-            return;
-        }
-
-        if ($this->selectedProvider !== null) {
-            return;
-        }
-
-        if (! $this->runId) {
-            return;
-        }
+        if ($this->selectedContactType !== null) return;
+        if ($this->selectedProvider !== null) return;
+        if (! $this->runId) return;
 
         $run = AnaliseRun::find($this->runId);
-
-        if (! $run) {
-            return;
-        }
+        if (! $run) return;
 
         $this->progress = (int) $run->progress;
         $this->running = ($run->status === 'running');
 
         if ($run->status === 'running') {
-            app(RunStepper::class)->step($run, $this->chunkSize, 1.5);
-
+            app(RunStepper::class)->step($run, $this->chunkSize, 0.0); // ✅ sem sleep
             $run->refresh();
+
             $this->progress = (int) $run->progress;
             $this->running = ($run->status === 'running');
         }
@@ -248,9 +286,7 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
 
     public function limpar(): void
     {
-        if ($this->running) {
-            return;
-        }
+        if ($this->running) return;
 
         $this->runId = null;
         $this->progress = 0;
@@ -298,10 +334,8 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
         $enrs = IpEnrichment::whereIn('ip', $ips)->get()->keyBy('ip');
 
         $enrichedByIp = [];
-
         foreach ($ips as $ip) {
             $enrichment = $enrs->get($ip);
-
             $enrichedByIp[$ip] = [
                 'ip' => $ip,
                 'city' => $enrichment?->city,
@@ -311,18 +345,48 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
             ];
         }
 
+        $messageLog = Bilhetagem::query()
+            ->where('analise_run_id', $run->id)
+            ->orderByDesc('timestamp_utc')
+            ->get([
+                'timestamp_utc',
+                'message_id',
+                'sender',
+                'recipient',
+                'sender_ip',
+                'sender_port',
+                'type',
+            ])
+            ->map(function (Bilhetagem $b) {
+                return [
+                    'timestamp_utc' => $b->timestamp_utc,
+                    'message_id' => $b->message_id,
+                    'sender' => $b->sender,
+                    'recipient' => $b->recipient,
+                    'sender_ip' => $b->sender_ip,
+                    'sender_port' => $b->sender_port,
+                    'type' => $b->type,
+                ];
+            })
+            ->values()
+            ->all();
+
+        $parsed['message_log'] = $messageLog;
+
         $this->report = (new ReportAggregator())->buildReport($parsed, $enrichedByIp);
+
+        if (count($this->report['bilhetagem_cards'] ?? []) > 0) {
+            $this->tab = 'bilhetagem';
+        }
     }
 
     public function openContactsModal(string $type): void
     {
         $this->selectedContactType = $type;
 
-        if ($type === 'simetricos') {
-            $this->selectedContacts = $this->report['symmetric_contacts'] ?? [];
-        } else {
-            $this->selectedContacts = $this->report['asymmetric_contacts'] ?? [];
-        }
+        $this->selectedContacts = $type === 'simetricos'
+            ? ($this->report['symmetric_contacts'] ?? [])
+            : ($this->report['asymmetric_contacts'] ?? []);
 
         $this->mountAction('contactsModal');
     }
@@ -331,11 +395,7 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
     {
         return Action::make('contactsModal')
             ->label('Contatos')
-            ->modalHeading(function () {
-                return ($this->selectedContactType === 'simetricos')
-                    ? 'Contatos Simétricos'
-                    : 'Contatos Assimétricos';
-            })
+            ->modalHeading(fn () => ($this->selectedContactType === 'simetricos') ? 'Contatos Simétricos' : 'Contatos Assimétricos')
             ->modalWidth(Width::FiveExtraLarge)
             ->modalSubmitAction(false)
             ->modalCancelActionLabel('Fechar')
@@ -348,10 +408,8 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
     public function openProviderIpsModal(string $provider): void
     {
         $provider = trim($provider);
-
         $this->selectedProvider = $provider !== '' ? $provider : 'Desconhecido';
         $this->selectedProviderIps = $this->report['provider_ip_map'][$this->selectedProvider] ?? [];
-
         $this->mountAction('providerIpsModal');
     }
 
@@ -375,9 +433,6 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
         $this->selectedProviderIps = [];
     }
 
-    /**
-     * ✅ Resolve HTML de upload: aceita HTML direto ou ZIP (procura records.html).
-     */
     private function resolveHtmlFromUpload(string $storedPath): ?string
     {
         $disk = Storage::disk('public');
@@ -407,25 +462,26 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
             $zip->extractTo($tmpDir);
             $zip->close();
 
-            $iterator = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($tmpDir, \FilesystemIterator::SKIP_DOTS)
-            );
+            $recordsPath = $tmpDir . DIRECTORY_SEPARATOR . 'records.html';
 
-            $recordsPath = null;
+            if (! file_exists($recordsPath)) {
+                $iterator = new \RecursiveIteratorIterator(
+                    new \RecursiveDirectoryIterator($tmpDir, \FilesystemIterator::SKIP_DOTS)
+                );
 
-            foreach ($iterator as $file) {
-                if ($file->isFile() && Str::lower($file->getFilename()) === 'records.html') {
-                    $recordsPath = $file->getPathname();
-                    break;
+                $found = null;
+                foreach ($iterator as $file) {
+                    if ($file->isFile() && Str::lower($file->getFilename()) === 'records.html') {
+                        $found = $file->getPathname();
+                        break;
+                    }
                 }
-            }
 
-            if (! $recordsPath || ! file_exists($recordsPath)) {
-                return null;
+                if (! $found) return null;
+                $recordsPath = $found;
             }
 
             $html = @file_get_contents($recordsPath);
-
             return is_string($html) && trim($html) !== '' ? $html : null;
         } finally {
             $this->deleteDirectoryRecursive($tmpDir);
@@ -434,9 +490,7 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
 
     private function deleteDirectoryRecursive(string $dir): void
     {
-        if (! is_dir($dir)) {
-            return;
-        }
+        if (! is_dir($dir)) return;
 
         $it = new \RecursiveIteratorIterator(
             new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS),
@@ -444,11 +498,8 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
         );
 
         foreach ($it as $file) {
-            if ($file->isDir()) {
-                @rmdir($file->getPathname());
-            } else {
-                @unlink($file->getPathname());
-            }
+            if ($file->isDir()) @rmdir($file->getPathname());
+            else @unlink($file->getPathname());
         }
 
         @rmdir($dir);

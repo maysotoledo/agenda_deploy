@@ -27,12 +27,19 @@ class ReportAggregator
             ? count($asymmetricContacts)
             : $this->extractAsymmetricContactsCount($parsed);
 
-        // ✅ GRUPOS (vira groups_rows)
         $groupsRows = $this->buildGroupsRows($parsed['groups'] ?? [], $tz);
-
-        // ✅ CONNECTION (vira connection_summary)
         $connectionSummary = $this->buildConnectionSummary($parsed['connection_info'] ?? [], $tz);
 
+        // agenda p/ badge
+        $agendaPhones = [];
+        foreach (array_merge($symmetricContacts, $asymmetricContacts) as $p) {
+            $agendaPhones[(string) $p] = true;
+        }
+
+        // ✅ bilhetagem cards no formato do Blade
+        $bilhetagemCards = $this->buildBilhetagemCards($parsed['message_log'] ?? [], $agendaPhones, $tz);
+
+        // --- restante do seu código de IPs (mantido) ---
         $timelineRows = [];
         $uniqueIpAgg = [];
         $providerStatsAgg = [];
@@ -237,11 +244,11 @@ class ReportAggregator
             'symmetric_contacts' => $symmetricContacts,
             'asymmetric_contacts' => $asymmetricContacts,
 
-            // ✅ NOVO
             'groups_rows' => $groupsRows,
-
-            // ✅ NOVO
             'connection_summary' => $connectionSummary,
+
+            // ✅ aqui é o que o Blade usa
+            'bilhetagem_cards' => $bilhetagemCards,
 
             'timeline_rows' => $timelineRows,
             'unique_ip_rows' => $uniqueIpRows,
@@ -262,6 +269,66 @@ class ReportAggregator
             'fixed_recent_provider' => null,
             'fixed_recent_ips' => [],
         ];
+    }
+
+    private function buildBilhetagemCards(array $messageLog, array $agendaPhones, string $tz): array
+    {
+        $byRecipient = [];
+
+        foreach ($messageLog as $m) {
+            $m = (array) $m;
+
+            $recipient = trim((string) ($m['recipient'] ?? ''));
+            if ($recipient === '') continue;
+
+            $tsUtc = $this->toCarbonUtc($m['timestamp_utc'] ?? null);
+            $tsLocal = $tsUtc ? $tsUtc->copy()->setTimezone($tz)->format('Y-m-d H:i:s') : null;
+
+            $row = [
+                'timestamp' => $tsLocal,
+                'sender_ip' => ($m['sender_ip'] ?? null) ?: null,
+                'sender_port' => ($m['sender_port'] ?? null) ?: null,
+                'type' => ($m['type'] ?? null) ?: null,
+                'message_id' => ($m['message_id'] ?? null) ?: null,
+            ];
+
+            $byRecipient[$recipient] ??= [
+                'recipient' => $recipient,
+                'in_agenda' => isset($agendaPhones[$recipient]),
+                'total' => 0,
+                'rows' => [],
+            ];
+
+            $byRecipient[$recipient]['total']++;
+            $byRecipient[$recipient]['rows'][] = $row;
+        }
+
+        if (! $byRecipient) return [];
+
+        $cards = [];
+        foreach ($byRecipient as $recipient => $data) {
+            $rows = $data['rows'];
+
+            usort($rows, fn ($a, $b) => strcmp((string) ($b['timestamp'] ?? ''), (string) ($a['timestamp'] ?? '')));
+
+            $latest = $rows[0] ?? null;
+            $others = array_slice($rows, 1, 10);
+
+            $cards[] = [
+                'recipient' => $recipient,
+                'in_agenda' => (bool) ($data['in_agenda'] ?? false),
+                'total' => (int) ($data['total'] ?? 0),
+                'latest' => $latest,
+                'others' => $others,
+            ];
+        }
+
+        usort($cards, fn ($a, $b) =>
+            ($b['total'] <=> $a['total'])
+            ?: strcmp((string) data_get($b, 'latest.timestamp', ''), (string) data_get($a, 'latest.timestamp', ''))
+        );
+
+        return $cards;
     }
 
     private function buildGroupsRows(array $groups, string $tz): array
