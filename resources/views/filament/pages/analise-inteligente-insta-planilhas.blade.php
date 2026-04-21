@@ -59,7 +59,7 @@
             <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 <div class="rounded-xl border p-4">
                     <div class="text-sm text-gray-500">
-                        Conta Instagram: {{ $report['account_identifier'] ?? '-' }}
+                        Conta Instagram: {{ $report['vanity_name'] ?? ($report['account_identifier'] ?? '-') }}
                     </div>
                     <div class="text-sm text-gray-600 mt-1">
                        Nome: {{ $report['first_name'] ?? '-' }}
@@ -156,6 +156,7 @@
                 'cities' => ['label' => 'Cidades', 'icon' => 'heroicon-o-map-pin'],
                 'residencial' => ['label' => 'Noturno (23–06)', 'icon' => 'heroicon-o-moon'],
                 'movel' => ['label' => 'Móvel', 'icon' => 'heroicon-o-device-phone-mobile'],
+                'direct' => ['label' => 'Direct', 'icon' => 'heroicon-o-chat-bubble-left-right'],
             ];
 
             $counts = [
@@ -165,6 +166,7 @@
                 'cities' => count($report['city_stats_rows'] ?? []),
                 'residencial' => (int) ($report['night_total_events'] ?? 0),
                 'movel' => (int) ($report['mobile_total_events'] ?? 0),
+                'direct' => count($report['direct_threads'] ?? []),
             ];
         @endphp
 
@@ -245,9 +247,39 @@
                     @include('filament.pages.partials.sheet-movel', ['report' => $report])
                 </x-filament::section>
             @endif
+
+            @if ($tab === 'direct')
+                <x-filament::section heading="Direct (Conversas)">
+                    @php $threads = $report['direct_threads'] ?? []; @endphp
+
+                    @if (count($threads) === 0)
+                        <div class="text-sm text-gray-500">Nenhuma conversa encontrada em Unified Messages.</div>
+                    @else
+                        <div class="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                            @foreach($threads as $t)
+                                @php
+                                    $name = $t['participant'] ?? '—';
+                                    $msgCount = count($t['messages'] ?? []);
+                                @endphp
+
+                                <button
+                                    type="button"
+                                    class="rounded-xl border p-4 text-left hover:bg-gray-50 transition"
+                                    wire:click="openDirectModal({{ json_encode($name) }})"
+                                >
+                                    <div class="text-sm text-gray-500">Conversou com</div>
+                                    <div class="font-semibold break-all">{{ $name }}</div>
+                                    <div class="text-xs text-gray-400 mt-1">
+                                        {{ number_format($msgCount, 0, ',', '.') }} mensagem(ns)
+                                    </div>
+                                </button>
+                            @endforeach
+                        </div>
+                    @endif
+                </x-filament::section>
+            @endif
         </div>
     @endif
 
-    {{-- ✅ host dos modais das Actions --}}
     <x-filament-actions::modals />
 </x-filament-panels::page>

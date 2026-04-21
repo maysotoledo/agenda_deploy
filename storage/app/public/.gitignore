@@ -1,6 +1,9 @@
 *
 !.gitignore
 !uploads/
-!uploads/**
+!uploads/generic-logs/
+!uploads/records-html/
+!uploads/records-html-bilhetagem/
+!uploads/records-html-instagram/
 !telematica/
 !telematica/**

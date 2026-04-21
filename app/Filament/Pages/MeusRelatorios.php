@@ -100,15 +100,7 @@ class MeusRelatorios extends Page implements HasTable
                         $source = $this->resolveSource($record);
 
                         if ($source === 'instagram') {
-                            // ✅ IGUAL AO RESUMO: vem do parsed -> account_identifier
-                            // report = ['_source' => 'instagram', '_parsed' => [...]]
-                            $ig = $this->resolveInstagramHandleFromRun($record);
-
-                            if ($ig === '') {
-                                return '—';
-                            }
-
-                            return str_starts_with($ig, '@') ? $ig : "@{$ig}";
+                            return $this->resolveInstagramAlvo($record);
                         }
 
                         if ($source === 'generico') {
@@ -143,15 +135,15 @@ class MeusRelatorios extends Page implements HasTable
                     ->suffix('%')
                     ->sortable(),
 
-                // Tables\Columns\TextColumn::make('total_unique_ips')
-                //     ->label('IPs únicos')
-                //     ->numeric()
-                //     ->sortable(),
+                Tables\Columns\TextColumn::make('total_unique_ips')
+                    ->label('IPs únicos')
+                    ->numeric()
+                    ->sortable(),
 
-                // Tables\Columns\TextColumn::make('processed_unique_ips')
-                //     ->label('IPs processados')
-                //     ->numeric()
-                //     ->sortable(),
+                Tables\Columns\TextColumn::make('processed_unique_ips')
+                    ->label('IPs processados')
+                    ->numeric()
+                    ->sortable(),
 
                 Tables\Columns\TextColumn::make('created_at')
                     ->label('Criado em')
@@ -162,7 +154,6 @@ class MeusRelatorios extends Page implements HasTable
                     ->label('Ações')
                     ->view('filament.pages.partials.meus-relatorios-acoes'),
             ])
-
             ->filters([
                 Tables\Filters\SelectFilter::make('status')
                     ->label('Status')
@@ -209,7 +200,7 @@ class MeusRelatorios extends Page implements HasTable
                 'analise_runs.id',
                 'analise_runs.user_id',
                 'analise_runs.target',
-                'analise_runs.report', // ✅ precisamos ler report._parsed.account_identifier
+                'analise_runs.report', // ✅ precisa para pegar account_identifier / first_name do _parsed
                 'analise_runs.status',
                 'analise_runs.progress',
                 'analise_runs.total_unique_ips',
@@ -220,14 +211,15 @@ class MeusRelatorios extends Page implements HasTable
     }
 
     /**
-     * Pega o username IG do lugar correto:
-     * report['_parsed']['account_identifier'] (igual o resumo usa via aggregator)
+     * Instagram:
+     * - se tiver conta (account_identifier) => @conta
+     * - senão, se tiver nome (first_name) => Nome
+     * - senão => target/—
      */
-    protected function resolveInstagramHandleFromRun(AnaliseRun $run): string
+    protected function resolveInstagramAlvo(AnaliseRun $run): string
     {
         $report = $run->report;
 
-        // se por algum motivo vier como string JSON, decodifica
         if (is_string($report) && trim($report) !== '') {
             $decoded = json_decode($report, true);
             if (is_array($decoded)) {
@@ -235,25 +227,18 @@ class MeusRelatorios extends Page implements HasTable
             }
         }
 
-        // ✅ lugar correto (conforme você salva na criação do run)
-        $ig = trim((string) data_get($report, '_parsed.account_identifier'));
-
-        // fallback: alguns lugares alternativos (se mudar o formato no futuro)
-        if ($ig === '') {
-            $ig = trim((string) data_get($report, 'account_identifier'));
+        $handle = trim((string) data_get($report, '_parsed.account_identifier'));
+        if ($handle !== '' && ! preg_match('/^\d+$/', $handle)) {
+            return str_starts_with($handle, '@') ? $handle : "@{$handle}";
         }
 
-        // fallback final
-        if ($ig === '') {
-            $ig = trim((string) ($run->target ?? ''));
+        $name = trim((string) data_get($report, '_parsed.first_name'));
+        if ($name !== '') {
+            return $name;
         }
 
-        // se for só número, não é username
-        if ($ig !== '' && preg_match('/^\d+$/', $ig)) {
-            return '';
-        }
-
-        return $ig;
+        $fallback = trim((string) ($run->target ?? ''));
+        return $fallback !== '' ? $fallback : '—';
     }
 
     public function resolveSource(AnaliseRun $run): string

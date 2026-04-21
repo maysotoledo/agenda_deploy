@@ -103,13 +103,7 @@ class RelatoriosProcessados extends Page implements HasTable
                         $source = $this->resolveSource($record);
 
                         if ($source === 'instagram') {
-                            $ig = $this->resolveInstagramHandleFromRun($record);
-
-                            if ($ig === '') {
-                                return '—';
-                            }
-
-                            return str_starts_with($ig, '@') ? $ig : "@{$ig}";
+                            return $this->resolveInstagramAlvo($record);
                         }
 
                         if ($source === 'generico') {
@@ -150,15 +144,15 @@ class RelatoriosProcessados extends Page implements HasTable
                     ->suffix('%')
                     ->sortable(),
 
-                // Tables\Columns\TextColumn::make('total_unique_ips')
-                //     ->label('IPs únicos')
-                //     ->numeric()
-                //     ->sortable(),
+                Tables\Columns\TextColumn::make('total_unique_ips')
+                    ->label('IPs únicos')
+                    ->numeric()
+                    ->sortable(),
 
-                // Tables\Columns\TextColumn::make('processed_unique_ips')
-                //     ->label('IPs processados')
-                //     ->numeric()
-                //     ->sortable(),
+                Tables\Columns\TextColumn::make('processed_unique_ips')
+                    ->label('IPs processados')
+                    ->numeric()
+                    ->sortable(),
 
                 Tables\Columns\TextColumn::make('created_at')
                     ->label('Criado em')
@@ -214,7 +208,7 @@ class RelatoriosProcessados extends Page implements HasTable
                 'analise_runs.id',
                 'analise_runs.user_id',
                 'analise_runs.target',
-                'analise_runs.report', // ✅ precisamos ler _parsed.account_identifier
+                'analise_runs.report', // ✅ precisa para pegar account_identifier / first_name do _parsed
                 'analise_runs.status',
                 'analise_runs.progress',
                 'analise_runs.total_unique_ips',
@@ -224,11 +218,7 @@ class RelatoriosProcessados extends Page implements HasTable
             ->selectRaw("LOWER(JSON_UNQUOTE(JSON_EXTRACT(analise_runs.report, '$._source'))) as source_extracted");
     }
 
-    /**
-     * Instagram: pega do lugar correto (conforme seu create()):
-     * report['_parsed']['account_identifier']
-     */
-    protected function resolveInstagramHandleFromRun(AnaliseRun $run): string
+    protected function resolveInstagramAlvo(AnaliseRun $run): string
     {
         $report = $run->report;
 
@@ -239,22 +229,18 @@ class RelatoriosProcessados extends Page implements HasTable
             }
         }
 
-        $ig = trim((string) data_get($report, '_parsed.account_identifier'));
-
-        if ($ig === '') {
-            $ig = trim((string) data_get($report, 'account_identifier'));
+        $handle = trim((string) data_get($report, '_parsed.account_identifier'));
+        if ($handle !== '' && ! preg_match('/^\d+$/', $handle)) {
+            return str_starts_with($handle, '@') ? $handle : "@{$handle}";
         }
 
-        if ($ig === '') {
-            $ig = trim((string) ($run->target ?? ''));
+        $name = trim((string) data_get($report, '_parsed.first_name'));
+        if ($name !== '') {
+            return $name;
         }
 
-        // se for só número (telefone/id), não é username
-        if ($ig !== '' && preg_match('/^\d+$/', $ig)) {
-            return '';
-        }
-
-        return $ig;
+        $fallback = trim((string) ($run->target ?? ''));
+        return $fallback !== '' ? $fallback : '—';
     }
 
     public function resolveSource(AnaliseRun $run): string

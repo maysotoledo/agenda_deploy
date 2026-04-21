@@ -3,6 +3,9 @@
 namespace App\Services\AnaliseInteligente\Instagram;
 
 use Carbon\Carbon;
+use DOMDocument;
+use DOMElement;
+use DOMXPath;
 
 class RecordsHtmlParser
 {
@@ -10,9 +13,10 @@ class RecordsHtmlParser
     {
         libxml_use_internal_errors(true);
 
-        $dom = new \DOMDocument();
+        $dom = new DOMDocument();
         $dom->loadHTML($html);
-        $xp = new \DOMXPath($dom);
+
+        $xp = new DOMXPath($dom);
 
         $target = $this->getSimpleValueByLabel($xp, 'Target');
         $generated = $this->getSimpleValueByLabel($xp, 'Generated');
@@ -20,10 +24,10 @@ class RecordsHtmlParser
         $accountIdentifier = $this->getSimpleValueByLabel($xp, 'Account Identifier');
         $registrationDate = $this->getSimpleValueByLabel($xp, 'Registration Date');
 
-        // ✅ fallback: se não vier Target, usa Account Identifier como alvo
+        $vanityName = $this->extractVanityName($xp);
+
         $target = $target ?? $accountIdentifier;
 
-        // Registration IP (no HTML normalmente vem sem porta)
         $registrationIpRaw = $this->getSimpleValueByLabel($xp, 'Registration Ip');
         $registrationParsed = $this->parseIpAndPort($registrationIpRaw);
         $registrationIp = $registrationParsed['ip'];
@@ -33,6 +37,8 @@ class RecordsHtmlParser
         $lastLocation = $this->extractLastLocation($dom);
 
         $ipEvents = $this->extractIpEvents($xp);
+
+        $directThreads = $this->extractUnifiedMessagesThreadsDom($xp, $vanityName, $accountIdentifier);
 
         [$rangeStartUtc, $rangeEndUtc] = $this->parseDateRangeUtc($dateRange);
 
@@ -44,6 +50,8 @@ class RecordsHtmlParser
             'range_end_utc' => $rangeEndUtc,
 
             'account_identifier' => $accountIdentifier,
+            'vanity_name' => $vanityName,
+
             'first_name' => $firstName,
             'registration_date' => $this->parseUtc($registrationDate),
             'registration_ip' => $registrationIp,
@@ -60,10 +68,12 @@ class RecordsHtmlParser
             ),
 
             'ip_events' => $ipEvents,
+
+            'direct_threads' => $directThreads,
         ];
     }
 
-    private function getSimpleValueByLabel(\DOMXPath $xp, string $label): ?string
+    private function getSimpleValueByLabel(DOMXPath $xp, string $label): ?string
     {
         $query = "//div[contains(@class,'t i')][normalize-space(text())='{$label}']/div[contains(@class,'m')]/div";
         $nodes = $xp->query($query);
@@ -73,32 +83,33 @@ class RecordsHtmlParser
         }
 
         $value = trim($nodes->item(0)?->textContent ?? '');
-
         return $value !== '' ? $value : null;
     }
 
-    private function extractFirstName(\DOMXPath $xp): ?string
+    private function extractVanityName(DOMXPath $xp): ?string
     {
-        $nodes = $xp->query("//div[contains(@class,'t i')][normalize-space(text())='First']/div[contains(@class,'m')]/div");
-
-        if (! $nodes || $nodes->length === 0) {
-            return null;
-        }
+        $nodes = $xp->query("//div[contains(@class,'t i')][normalize-space(text())='Vanity Name']/div[contains(@class,'m')]/div");
+        if (! $nodes || $nodes->length === 0) return null;
 
         $value = trim($nodes->item(0)?->textContent ?? '');
-
         return $value !== '' ? $value : null;
     }
 
-    private function extractPhoneInfo(\DOMXPath $xp): array
+    private function extractFirstName(DOMXPath $xp): ?string
+    {
+        $nodes = $xp->query("//div[contains(@class,'t i')][normalize-space(text())='First']/div[contains(@class,'m')]/div");
+        if (! $nodes || $nodes->length === 0) return null;
+
+        $value = trim($nodes->item(0)?->textContent ?? '');
+        return $value !== '' ? $value : null;
+    }
+
+    private function extractPhoneInfo(DOMXPath $xp): array
     {
         $value = $this->getSimpleValueByLabel($xp, 'Phone Numbers');
 
         if (! $value) {
-            return [
-                'phone' => null,
-                'verified_on' => null,
-            ];
+            return ['phone' => null, 'verified_on' => null];
         }
 
         $phone = null;
@@ -112,22 +123,15 @@ class RecordsHtmlParser
             $verifiedOn = $m[1];
         }
 
-        return [
-            'phone' => $phone,
-            'verified_on' => $verifiedOn,
-        ];
+        return ['phone' => $phone, 'verified_on' => $verifiedOn];
     }
 
-    private function extractLastLocation(\DOMDocument $dom): array
+    private function extractLastLocation(DOMDocument $dom): array
     {
         $html = $this->extractPropertySectionHtml($dom, 'property-last_location');
 
         if ($html === '') {
-            return [
-                'time' => null,
-                'latitude' => null,
-                'longitude' => null,
-            ];
+            return ['time' => null, 'latitude' => null, 'longitude' => null];
         }
 
         $text = html_entity_decode(strip_tags($html), ENT_QUOTES | ENT_HTML5, 'UTF-8');
@@ -150,48 +154,41 @@ class RecordsHtmlParser
             $lng = (float) $coords[1];
         }
 
-        return [
-            'time' => $time,
-            'latitude' => $lat,
-            'longitude' => $lng,
-        ];
+        return ['time' => $time, 'latitude' => $lat, 'longitude' => $lng];
     }
 
-    private function extractPropertySectionHtml(\DOMDocument $dom, string $propertyId): string
+    private function extractPropertySectionHtml(DOMDocument $dom, string $propertyId): string
     {
         $target = $dom->getElementById($propertyId);
-
-        if (! $target) {
-            return '';
-        }
+        if (! $target) return '';
 
         $html = '';
         $node = $target;
 
         while ($node) {
-            if ($node instanceof \DOMElement) {
+            if ($node instanceof DOMElement) {
                 $id = $node->getAttribute('id');
-
                 if ($node !== $target && $id !== '' && str_starts_with($id, 'property-')) {
                     break;
                 }
-
                 $html .= $dom->saveHTML($node);
             }
-
             $node = $node->nextSibling;
         }
 
         return $html;
     }
 
-    private function extractIpEvents(\DOMXPath $xp): array
+    private function makeMapsUrl(?float $lat, ?float $lng): ?string
+    {
+        if ($lat === null || $lng === null) return null;
+        return "https://www.google.com/maps?q={$lat},{$lng}";
+    }
+
+    private function extractIpEvents(DOMXPath $xp): array
     {
         $container = $xp->query("//div[@id='property-ip_addresses']")->item(0);
-
-        if (! $container) {
-            return [];
-        }
+        if (! $container) return [];
 
         $labels = $xp->query(
             ".//div[contains(@class,'t i')][normalize-space(text())='IP Address' or normalize-space(text())='Time']",
@@ -205,9 +202,8 @@ class RecordsHtmlParser
             $label = trim($labelNode->childNodes->item(0)?->textContent ?? $labelNode->textContent ?? '');
 
             $valueNode = null;
-
             foreach ($labelNode->childNodes as $child) {
-                if ($child instanceof \DOMElement && str_contains($child->getAttribute('class'), 'm')) {
+                if ($child instanceof DOMElement && str_contains($child->getAttribute('class'), 'm')) {
                     $valueNode = $child->getElementsByTagName('div')->item(0);
                     break;
                 }
@@ -222,7 +218,6 @@ class RecordsHtmlParser
 
             if ($label === 'Time') {
                 $time = $this->parseUtc($value);
-
                 if ($last && $time instanceof Carbon) {
                     $events[] = [
                         'ip' => $last['ip'],
@@ -242,53 +237,29 @@ class RecordsHtmlParser
         $value = trim((string) $value);
 
         if ($value === '') {
-            return [
-                'ip' => null,
-                'ip_with_port' => null,
-                'port' => null,
-            ];
+            return ['ip' => null, 'ip_with_port' => null, 'port' => null];
         }
 
         if (preg_match('/^\[([0-9a-fA-F:]+)\]:(\d{1,5})$/', $value, $m)) {
             $ipBase = trim($m[1]);
             $port = (int) $m[2];
-
-            return [
-                'ip' => $ipBase,
-                'ip_with_port' => "[{$ipBase}]:{$port}",
-                'port' => $port,
-            ];
+            return ['ip' => $ipBase, 'ip_with_port' => "[{$ipBase}]:{$port}", 'port' => $port];
         }
 
         if (preg_match('/^\[([0-9a-fA-F:]+)\]$/', $value, $m)) {
             $ipBase = trim($m[1]);
-
-            return [
-                'ip' => $ipBase,
-                'ip_with_port' => "[{$ipBase}]",
-                'port' => null,
-            ];
+            return ['ip' => $ipBase, 'ip_with_port' => "[{$ipBase}]", 'port' => null];
         }
 
         if (preg_match('/^(\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/', $value, $m)) {
             $ipBase = trim($m[1]);
             $port = (int) $m[2];
-
-            return [
-                'ip' => $ipBase,
-                'ip_with_port' => "{$ipBase}:{$port}",
-                'port' => $port,
-            ];
+            return ['ip' => $ipBase, 'ip_with_port' => "{$ipBase}:{$port}", 'port' => $port];
         }
 
         if (preg_match('/^(\d{1,3}(?:\.\d{1,3}){3})$/', $value, $m)) {
             $ipBase = trim($m[1]);
-
-            return [
-                'ip' => $ipBase,
-                'ip_with_port' => $ipBase,
-                'port' => null,
-            ];
+            return ['ip' => $ipBase, 'ip_with_port' => $ipBase, 'port' => null];
         }
 
         $ipBase = $value;
@@ -296,29 +267,13 @@ class RecordsHtmlParser
             $ipBase = trim($m[1]);
         }
 
-        return [
-            'ip' => $ipBase !== '' ? $ipBase : null,
-            'ip_with_port' => $value,
-            'port' => null,
-        ];
-    }
-
-    private function makeMapsUrl(?float $lat, ?float $lng): ?string
-    {
-        if ($lat === null || $lng === null) {
-            return null;
-        }
-
-        return "https://www.google.com/maps?q={$lat},{$lng}";
+        return ['ip' => $ipBase !== '' ? $ipBase : null, 'ip_with_port' => $value, 'port' => null];
     }
 
     private function parseUtc(?string $value): ?Carbon
     {
         $value = trim((string) $value);
-
-        if ($value === '') {
-            return null;
-        }
+        if ($value === '') return null;
 
         $value = str_replace(' UTC', '', $value);
 
@@ -332,13 +287,182 @@ class RecordsHtmlParser
     private function parseDateRangeUtc(?string $range): array
     {
         $range = trim((string) $range);
-
-        if ($range === '' || ! str_contains($range, ' to ')) {
-            return [null, null];
-        }
+        if ($range === '' || ! str_contains($range, ' to ')) return [null, null];
 
         [$a, $b] = explode(' to ', $range, 2);
 
         return [$this->parseUtc($a), $this->parseUtc($b)];
+    }
+
+    // =========================================================
+    // ✅ DIRECT
+    // =========================================================
+    private function extractUnifiedMessagesThreadsDom(DOMXPath $xp, ?string $vanityName, ?string $accountIdentifier): array
+    {
+        $container = $xp->query("//div[@id='property-unified_messages']")->item(0);
+        if (! $container) return [];
+
+        $threadOuters = $xp->query(".//div[contains(@class,'t') and contains(@class,'o')][.//div[contains(@class,'t') and contains(@class,'i')][normalize-space(text())='Thread']]", $container);
+        if (! $threadOuters || $threadOuters->length === 0) return [];
+
+        $meVanity = trim((string) $vanityName);
+        $meId = trim((string) $accountIdentifier);
+
+        $threads = [];
+
+        foreach ($threadOuters as $outer) {
+            if (!($outer instanceof DOMElement)) continue;
+
+            $labelNodes = $xp->query(".//div[contains(@class,'t') and contains(@class,'i')]", $outer);
+            if (! $labelNodes || $labelNodes->length === 0) continue;
+
+            $participantsRaw = [];
+            $messages = [];
+
+            $currentAuthorRaw = null;
+            $currentSent = null;
+
+            foreach ($labelNodes as $labelNode) {
+                if (!($labelNode instanceof DOMElement)) continue;
+
+                $label = $this->readLabel($labelNode);
+                if ($label === '') continue;
+
+                $value = $this->readValue($xp, $labelNode);
+
+                if ($label === 'Current Participants') {
+                    $participantsRaw = $this->extractParticipantsFromCurrentParticipantsValue($value);
+                    continue;
+                }
+
+                if ($label === 'Author') {
+                    $currentAuthorRaw = $value;
+                    continue;
+                }
+
+                if ($label === 'Sent') {
+                    $currentSent = $value;
+                    continue;
+                }
+
+                if ($label === 'Body') {
+                    if ($currentAuthorRaw && $currentSent) {
+                        $messages[] = [
+                            'author' => $this->extractParticipantName($currentAuthorRaw),
+                            'author_raw' => $currentAuthorRaw,
+                            'sent_utc' => $currentSent,
+                            'body' => $value,
+                        ];
+                    }
+
+                    $currentAuthorRaw = null;
+                    $currentSent = null;
+                    continue;
+                }
+            }
+
+            $other = $this->pickOtherParticipant($participantsRaw, $meVanity, $meId);
+
+            // fallback se não achou: pega o primeiro autor que não seja o alvo
+            if (! $other && count($messages) > 0) {
+                foreach ($messages as $m) {
+                    $a = trim((string) ($m['author'] ?? ''));
+                    if ($meVanity !== '' && strcasecmp($a, $meVanity) === 0) continue;
+                    $other = $a !== '' ? $a : null;
+                    if ($other) break;
+                }
+            }
+
+            if (! $other || count($messages) === 0) continue;
+
+            $threads[] = [
+                'participant' => $other,
+                'messages' => $messages,
+            ];
+        }
+
+        $grouped = [];
+        foreach ($threads as $t) {
+            $key = $t['participant'];
+            $grouped[$key] ??= ['participant' => $t['participant'], 'messages' => []];
+            $grouped[$key]['messages'] = array_merge($grouped[$key]['messages'], $t['messages']);
+        }
+
+        return array_values($grouped);
+    }
+
+    private function extractParticipantsFromCurrentParticipantsValue(string $value): array
+    {
+        // remove timestamp tipo "2025-07-15 10:39:55 UTC"
+        $lines = preg_split("/\r\n|\r|\n/u", $value) ?: [];
+        $lines = array_values(array_filter(array_map('trim', $lines), fn ($l) => $l !== ''));
+
+        $out = [];
+        foreach ($lines as $l) {
+            if (preg_match('/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+UTC$/', $l)) {
+                continue;
+            }
+
+            // mantém só "nome (Instagram: id)"
+            if (preg_match('/^(.+?)\s*\(Instagram:\s*\d+\)\s*$/i', $l)) {
+                $out[] = $l;
+            }
+        }
+
+        return $out;
+    }
+
+    private function readLabel(DOMElement $labelNode): string
+    {
+        $label = '';
+
+        foreach ($labelNode->childNodes as $child) {
+            if ($child->nodeType === XML_TEXT_NODE) {
+                $label .= $child->textContent;
+                continue;
+            }
+
+            if ($child instanceof DOMElement) {
+                $class = $child->getAttribute('class');
+                if (str_contains($class, 'm')) {
+                    break;
+                }
+            }
+        }
+
+        $label = trim(preg_replace('/\s+/u', ' ', $label) ?? '');
+        return $label;
+    }
+
+    private function readValue(DOMXPath $xp, DOMElement $labelNode): string
+    {
+        $valueNode = $xp->query(".//div[contains(@class,'m')]/div", $labelNode)->item(0);
+        return trim($valueNode?->textContent ?? '');
+    }
+
+    private function pickOtherParticipant(array $participantsRaw, string $meVanity, string $meId): ?string
+    {
+        foreach ($participantsRaw as $praw) {
+            $pname = $this->extractParticipantName($praw);
+
+            $isMe = false;
+            if ($meVanity !== '' && strcasecmp($pname, $meVanity) === 0) $isMe = true;
+            if ($meId !== '' && str_contains($praw, "(Instagram: {$meId})")) $isMe = true;
+
+            if (! $isMe) return $pname;
+        }
+
+        return null;
+    }
+
+    private function extractParticipantName(string $raw): string
+    {
+        $raw = trim($raw);
+
+        if (preg_match('/^(.+?)\s*\(Instagram:\s*\d+\)\s*$/i', $raw, $m)) {
+            return trim($m[1]);
+        }
+
+        return $raw;
     }
 }

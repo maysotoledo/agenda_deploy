@@ -211,7 +211,7 @@ class ReportAggregator
             usort($list, fn ($a, $b) => ($b['count'] <=> $a['count']) ?: ($b['last_seen']->timestamp <=> $a['last_seen']->timestamp));
 
             $providerIpMapOut[$prov] = array_map(fn ($r) => [
-                'ip' => $r['ip'], // ✅ ip:port (ou [ipv6]:port)
+                'ip' => $r['ip'], // ip:port (ou [ipv6]:port)
                 'count' => (int) $r['count'],
                 'last_seen' => $r['last_seen']->format('Y-m-d H:i:s'),
                 'city' => $r['city'] ?? '-',
@@ -222,10 +222,16 @@ class ReportAggregator
         usort($nightEventsRows, fn ($a, $b) => strcmp($b['datetime'], $a['datetime']));
         usort($mobileEventsRows, fn ($a, $b) => strcmp($b['datetime'], $a['datetime']));
 
+        // ✅ DIRECT
+        $directThreads = $this->buildDirectThreads($parsed, $tz);
+
         return [
             'generated_at' => $this->formatDate($parsed['generated_at'] ?? null, $tz),
+
             'target' => $parsed['target'] ?? null,
             'account_identifier' => $parsed['account_identifier'] ?? null,
+            'vanity_name' => $parsed['vanity_name'] ?? null,
+
             'first_name' => $parsed['first_name'] ?? null,
 
             'registration_date' => $this->formatDate($parsed['registration_date'] ?? null, $tz),
@@ -247,7 +253,6 @@ class ReportAggregator
             'provider_stats_rows' => $providerStatsRows,
             'city_stats_rows' => $cityStatsRows,
 
-            // ✅ agora o modal vai listar IP + porta
             'provider_ip_map' => $providerIpMapOut,
 
             'night_total_events' => $nightTotalEvents,
@@ -255,7 +260,71 @@ class ReportAggregator
 
             'mobile_total_events' => $mobileTotalEvents,
             'mobile_events_rows' => $mobileEventsRows,
+
+            // ✅ NOVO
+            'direct_threads' => $directThreads,
         ];
+    }
+
+    private function buildDirectThreads(array $parsed, string $tz): array
+    {
+        $threads = (array) ($parsed['direct_threads'] ?? []);
+
+        // ✅ alvo real: vanity_name
+        $me = trim((string) ($parsed['vanity_name'] ?? ''));
+        if ($me === '') {
+            $me = trim((string) ($parsed['account_identifier'] ?? ''));
+        }
+
+        $out = [];
+
+        foreach ($threads as $t) {
+            if (! is_array($t)) continue;
+
+            $participant = trim((string) ($t['participant'] ?? ''));
+            if ($participant === '') continue;
+
+            $messages = [];
+
+            foreach ((array) ($t['messages'] ?? []) as $m) {
+                if (! is_array($m)) continue;
+
+                $author = trim((string) ($m['author'] ?? ''));
+                $body = (string) ($m['body'] ?? '');
+                $sentUtc = (string) ($m['sent_utc'] ?? '');
+
+                $dt = $this->parseUtcString($sentUtc);
+                $dtLocal = $dt ? $dt->copy()->setTimezone($tz) : null;
+
+                $messages[] = [
+                    'author' => $author !== '' ? $author : '—',
+                    'datetime' => $dtLocal ? $dtLocal->format('d/m/Y H:i:s') : ($sentUtc ?: '—'),
+                    'body' => trim($body) !== '' ? trim($body) : '—',
+                    'from_target' => ($me !== '' && strcasecmp($author, $me) === 0),
+                ];
+            }
+
+            $out[] = [
+                'participant' => $participant,
+                'messages' => $messages,
+            ];
+        }
+
+        return $out;
+    }
+
+    private function parseUtcString(?string $value): ?Carbon
+    {
+        $value = trim((string) $value);
+        if ($value === '') return null;
+
+        $value = str_replace(' UTC', '', $value);
+
+        try {
+            return Carbon::createFromFormat('Y-m-d H:i:s', $value, 'UTC');
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     private function toCarbonUtc(mixed $value): ?Carbon
