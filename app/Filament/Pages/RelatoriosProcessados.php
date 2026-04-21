@@ -48,7 +48,6 @@ class RelatoriosProcessados extends Page implements HasTable
             ->query($this->getTableQuery())
             ->defaultSort('id', 'desc')
 
-            // ✅ BULK ACTIONS (Filament 4): ficam no toolbarActions()
             ->toolbarActions([
                 BulkAction::make('deleteSelected')
                     ->label('Excluir selecionados')
@@ -58,7 +57,6 @@ class RelatoriosProcessados extends Page implements HasTable
                     ->modalHeading('Excluir relatórios selecionados')
                     ->modalDescription('Essa ação não pode ser desfeita. Deseja realmente excluir os relatórios selecionados?')
                     ->modalSubmitActionLabel('Excluir')
-                    // ✅ NÃO carregar modelos (evita memória alta); o $records vira Collection de IDs
                     ->fetchSelectedRecords(false)
                     ->action(function (Collection $records): void {
                         $ids = $records->values()->all();
@@ -102,9 +100,23 @@ class RelatoriosProcessados extends Page implements HasTable
                 Tables\Columns\TextColumn::make('target')
                     ->label('Alvo')
                     ->state(function (AnaliseRun $record): string {
-                        return $this->resolveSource($record) === 'generico'
-                            ? 'Run #' . $record->id
-                            : ($record->target ?: '-');
+                        $source = $this->resolveSource($record);
+
+                        if ($source === 'instagram') {
+                            $ig = $this->resolveInstagramHandleFromRun($record);
+
+                            if ($ig === '') {
+                                return '—';
+                            }
+
+                            return str_starts_with($ig, '@') ? $ig : "@{$ig}";
+                        }
+
+                        if ($source === 'generico') {
+                            return 'Run #' . $record->id;
+                        }
+
+                        return $record->target ?: '-';
                     })
                     ->searchable()
                     ->copyable()
@@ -138,15 +150,15 @@ class RelatoriosProcessados extends Page implements HasTable
                     ->suffix('%')
                     ->sortable(),
 
-                Tables\Columns\TextColumn::make('total_unique_ips')
-                    ->label('IPs únicos')
-                    ->numeric()
-                    ->sortable(),
+                // Tables\Columns\TextColumn::make('total_unique_ips')
+                //     ->label('IPs únicos')
+                //     ->numeric()
+                //     ->sortable(),
 
-                Tables\Columns\TextColumn::make('processed_unique_ips')
-                    ->label('IPs processados')
-                    ->numeric()
-                    ->sortable(),
+                // Tables\Columns\TextColumn::make('processed_unique_ips')
+                //     ->label('IPs processados')
+                //     ->numeric()
+                //     ->sortable(),
 
                 Tables\Columns\TextColumn::make('created_at')
                     ->label('Criado em')
@@ -202,6 +214,7 @@ class RelatoriosProcessados extends Page implements HasTable
                 'analise_runs.id',
                 'analise_runs.user_id',
                 'analise_runs.target',
+                'analise_runs.report', // ✅ precisamos ler _parsed.account_identifier
                 'analise_runs.status',
                 'analise_runs.progress',
                 'analise_runs.total_unique_ips',
@@ -209,6 +222,39 @@ class RelatoriosProcessados extends Page implements HasTable
                 'analise_runs.created_at',
             ])
             ->selectRaw("LOWER(JSON_UNQUOTE(JSON_EXTRACT(analise_runs.report, '$._source'))) as source_extracted");
+    }
+
+    /**
+     * Instagram: pega do lugar correto (conforme seu create()):
+     * report['_parsed']['account_identifier']
+     */
+    protected function resolveInstagramHandleFromRun(AnaliseRun $run): string
+    {
+        $report = $run->report;
+
+        if (is_string($report) && trim($report) !== '') {
+            $decoded = json_decode($report, true);
+            if (is_array($decoded)) {
+                $report = $decoded;
+            }
+        }
+
+        $ig = trim((string) data_get($report, '_parsed.account_identifier'));
+
+        if ($ig === '') {
+            $ig = trim((string) data_get($report, 'account_identifier'));
+        }
+
+        if ($ig === '') {
+            $ig = trim((string) ($run->target ?? ''));
+        }
+
+        // se for só número (telefone/id), não é username
+        if ($ig !== '' && preg_match('/^\d+$/', $ig)) {
+            return '';
+        }
+
+        return $ig;
     }
 
     public function resolveSource(AnaliseRun $run): string

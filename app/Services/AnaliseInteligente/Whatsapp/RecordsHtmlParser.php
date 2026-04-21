@@ -21,6 +21,13 @@ class RecordsHtmlParser
         $generated = $this->getSimpleValueByLabel($xp, 'Generated');
         $dateRange = $this->getSimpleValueByLabel($xp, 'Date Range');
 
+        $registeredEmailsRaw = $this->getSimpleValueByLabel($xp, 'Registered Email Addresses');
+        $registeredEmails = [];
+        if (is_string($registeredEmailsRaw) && trim($registeredEmailsRaw) !== '') {
+            preg_match_all('/[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/i', $registeredEmailsRaw, $m);
+            $registeredEmails = array_values(array_unique($m[0] ?? []));
+        }
+
         $deviceInfo = $this->extractDeviceInfo($xp);
 
         $symTotalFromLabel = $this->extractLeadingInt($this->getSimpleValueByLabel($xp, 'Symmetric contacts'));
@@ -35,13 +42,10 @@ class RecordsHtmlParser
 
         $ipEvents = $this->extractIpEvents($xp);
 
-        // ✅ GRUPOS (robusto)
         $groups = $this->extractGroupsInfo($dom);
 
-        // ✅ CONNECTION (robusto: Last seen / Last IP)
         $connectionInfo = $this->extractConnectionInfo($dom);
 
-        // ✅ BILHETAGEM (robusto por texto)
         $messageLog = $this->extractMessageLog($dom);
 
         [$rangeStartUtc, $rangeEndUtc] = $this->parseDateRangeUtc($dateRange);
@@ -59,6 +63,8 @@ class RecordsHtmlParser
             'device' => $deviceInfo['device'],
             'device_build' => $deviceInfo['device_build'],
 
+            'registered_emails' => $registeredEmails,
+
             'symmetric_contacts_total' => $symTotal,
             'asymmetric_contacts_total' => $asymTotal,
 
@@ -70,15 +76,21 @@ class RecordsHtmlParser
 
             'ip_events' => $ipEvents,
 
-            // ✅ NOVO
             'groups' => $groups,
-
-            // ✅ NOVO
             'connection_info' => $connectionInfo,
 
-            // ✅ NOVO
             'message_log' => $messageLog,
         ];
+    }
+
+    public function parseBilhetagemOnly(string $html): array
+    {
+        libxml_use_internal_errors(true);
+
+        $dom = new \DOMDocument();
+        $dom->loadHTML($html);
+
+        return $this->extractMessageLog($dom);
     }
 
     private function getSimpleValueByLabel(\DOMXPath $xp, string $label): ?string
@@ -86,9 +98,7 @@ class RecordsHtmlParser
         $query = "//div[contains(@class,'t i')][normalize-space(text())='{$label}']/div[contains(@class,'m')]/div";
         $nodes = $xp->query($query);
 
-        if (! $nodes || $nodes->length === 0) {
-            return null;
-        }
+        if (! $nodes || $nodes->length === 0) return null;
 
         $value = trim($nodes->item(0)?->textContent ?? '');
 
@@ -323,9 +333,6 @@ class RecordsHtmlParser
         }
     }
 
-    /**
-     * ✅ parse UTC tolerante (alguns logs variam formato)
-     */
     private function parseUtcFlexible(?string $value): ?Carbon
     {
         $value = trim((string) $value);
@@ -372,9 +379,6 @@ class RecordsHtmlParser
         return null;
     }
 
-    /**
-     * ✅ GRUPOS por texto (não depende do DOM)
-     */
     private function extractGroupsInfo(\DOMDocument $dom): array
     {
         $sectionHtml = $this->extractPropertySectionHtml($dom, 'property-groups_info');
@@ -411,7 +415,6 @@ class RecordsHtmlParser
                 return;
             }
 
-            // ✅ evita registro fantasma: só salva se tiver ID
             if (! empty($current['id'])) {
                 $groups[$section][] = $current;
             }
@@ -440,9 +443,7 @@ class RecordsHtmlParser
                 continue;
             }
 
-            if (! $section) {
-                continue;
-            }
+            if (! $section) continue;
 
             if (strcasecmp($line, 'ID') === 0) {
                 $id = $lines[$i + 1] ?? null;
@@ -492,9 +493,7 @@ class RecordsHtmlParser
                 $current['id'] = $m[1];
             }
 
-            if (! $current) {
-                continue;
-            }
+            if (! $current) continue;
 
             if (preg_match($rxCreation, $line, $m)) {
                 $current['creation_utc'] = $this->parseUtc($m[1] . ' UTC');
@@ -520,9 +519,6 @@ class RecordsHtmlParser
         return $groups;
     }
 
-    /**
-     * ✅ CONNECTION por texto/DOM + fallback regex (Last seen é o foco)
-     */
     private function extractConnectionInfo(\DOMDocument $dom): array
     {
         $sectionHtml = $this->extractPropertySectionHtml($dom, 'property-connection_info');
@@ -538,9 +534,7 @@ class RecordsHtmlParser
             }
         }
 
-        if (trim($sectionHtml) === '') {
-            return [];
-        }
+        if (trim($sectionHtml) === '') return [];
 
         $sectionHtml = preg_replace('/<div[^>]*class="p"[^>]*>\s*<\/div>/i', "\n", $sectionHtml) ?? $sectionHtml;
         $sectionHtml = preg_replace('/<br\s*\/?>/i', "\n", $sectionHtml) ?? $sectionHtml;
@@ -565,16 +559,15 @@ class RecordsHtmlParser
 
         for ($i = 0; $i < count($lines); $i++) {
             $label = mb_strtolower(preg_replace('/\s+/u', ' ', $lines[$i]) ?? $lines[$i]);
-
             $next = $lines[$i + 1] ?? null;
 
             if ($label === 'device id' && $next) $out['device_id'] = $next;
-            if ($label === 'service start' && $next) $out['service_start_utc'] = $this->parseUtc($next);
+            if ($label === 'service start' && $next) $out['service_start_utc'] = $this->parseUtcFlexible($next);
             if ($label === 'device type' && $next) $out['device_type'] = $next;
             if ($label === 'app version' && $next) $out['app_version'] = $next;
             if ($label === 'device os build number' && $next) $out['device_os_build_number'] = $next;
             if ($label === 'connection state' && $next) $out['connection_state'] = $next;
-            if ($label === 'last seen' && $next) $out['last_seen_utc'] = $this->parseUtc($next);
+            if ($label === 'last seen' && $next) $out['last_seen_utc'] = $this->parseUtcFlexible($next);
             if ($label === 'last ip' && $next) $out['last_ip'] = $next;
         }
 
@@ -593,10 +586,18 @@ class RecordsHtmlParser
         return array_filter($out, fn ($v) => $v !== null && $v !== '');
     }
 
-    /**
-     * ✅ BILHETAGEM (Message Log) por texto (não depende do DOM estruturado)
-     */
     private function extractMessageLog(\DOMDocument $dom): array
+    {
+        $rows = $this->extractMessageLogByDom($dom);
+        if (count($rows) > 0) return $rows;
+
+        return $this->extractMessageLogByTextFallback($dom);
+    }
+
+    /**
+     * ✅ FIX AQUI: SEMPRE retorna array (mesmo se nada encontrado)
+     */
+    private function extractMessageLogByDom(\DOMDocument $dom): array
     {
         $ids = [
             'property-message_log',
@@ -612,21 +613,155 @@ class RecordsHtmlParser
             if (trim($sectionHtml) !== '') break;
         }
 
-        if (trim($sectionHtml) === '') {
-            $xp = new \DOMXPath($dom);
+        if (trim($sectionHtml) === '') return [];
 
-            $maybe = $xp->query("//div[contains(@class,'t i')][
-                contains(translate(normalize-space(text()), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'message log')
-                or contains(translate(normalize-space(text()), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'bilhet')
-                or contains(translate(normalize-space(text()), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'messages')
-            ]")?->item(0);
+        $tmp = new \DOMDocument();
+        libxml_use_internal_errors(true);
+        $tmp->loadHTML($sectionHtml);
 
-            if ($maybe instanceof \DOMElement) {
-                $parent = $maybe->parentNode instanceof \DOMElement ? $maybe->parentNode : null;
-                if ($parent) {
-                    $sectionHtml = $dom->saveHTML($parent) ?: '';
-                }
+        $xp = new \DOMXPath($tmp);
+
+        $messageNodes = $xp->query("//div[contains(@class,'t i')][normalize-space(text())='Message']");
+        if (! $messageNodes || $messageNodes->length === 0) return [];
+
+        $out = [];
+
+        foreach ($messageNodes as $mn) {
+            $container = $mn->parentNode instanceof \DOMElement ? $mn->parentNode : null;
+            if (! $container) continue;
+
+            $fields = $this->extractLabeledFields($xp, $container);
+
+            $timestamp = $this->cleanNullableString($fields['Timestamp'] ?? null);
+            $messageId = $this->cleanNullableString($fields['Message Id'] ?? $fields['Message ID'] ?? null);
+            $sender = $this->cleanNullableString($fields['Sender'] ?? null);
+
+            $recipients = $this->cleanNullableString($fields['Recipients'] ?? $fields['Recipient'] ?? null);
+            $recipientPhone = $this->extractFirstPhone($recipients);
+
+            $senderIp = $this->cleanNullableString($fields['Sender Ip'] ?? $fields['Sender IP'] ?? null);
+            $senderPort = $this->cleanNullableString($fields['Sender Port'] ?? null);
+            $type = $this->cleanNullableString($fields['Type'] ?? null);
+
+            if (! $recipientPhone) continue;
+
+            $out[] = [
+                'timestamp_utc' => $timestamp ? $this->parseUtcFlexible($timestamp) : null,
+                'message_id' => $messageId,
+                'sender' => $sender,
+                'recipient' => $recipientPhone,
+                'sender_ip' => $senderIp,
+                'sender_port' => $senderPort !== null && $senderPort !== '' ? (int) preg_replace('/\D+/', '', $senderPort) : null,
+                'type' => $type,
+            ];
+        }
+
+        // ✅ GARANTIA: sempre retorna array
+        return $out;
+    }
+
+    private function extractLabeledFields(\DOMXPath $xp, \DOMElement $container): array
+    {
+        $labels = $xp->query(".//div[contains(@class,'t i')]", $container);
+        if (! $labels) return [];
+
+        $fields = [];
+
+        foreach ($labels as $labelNode) {
+            $label = trim($labelNode->childNodes->item(0)?->textContent ?? $labelNode->textContent ?? '');
+            if ($label === '') continue;
+
+            $valNode = $this->extractValueContainer($labelNode);
+            $val = trim($valNode?->textContent ?? '');
+
+            if ($val !== '') {
+                $fields[$label] = $val;
             }
+        }
+
+        return $fields;
+    }
+
+    private function extractValueContainer(\DOMElement $labelNode): ?\DOMElement
+    {
+        foreach ($labelNode->childNodes as $child) {
+            if ($child instanceof \DOMElement && str_contains($child->getAttribute('class'), 'm')) {
+                return $child->getElementsByTagName('div')->item(0) instanceof \DOMElement
+                    ? $child->getElementsByTagName('div')->item(0)
+                    : null;
+            }
+        }
+
+        $parent = $labelNode->parentNode instanceof \DOMElement ? $labelNode->parentNode : null;
+        if (! $parent) return null;
+
+        foreach ($parent->childNodes as $sib) {
+            if ($sib instanceof \DOMElement && str_contains($sib->getAttribute('class'), 'm')) {
+                return $sib->getElementsByTagName('div')->item(0) instanceof \DOMElement
+                    ? $sib->getElementsByTagName('div')->item(0)
+                    : null;
+            }
+        }
+
+        return null;
+    }
+
+    private function extractFirstPhone(?string $text): ?string
+    {
+        $text = (string) $text;
+        if (trim($text) === '') return null;
+
+        if (preg_match('/(?<!\d)(55\d{10,13})(?!\d)/', $text, $m)) {
+            return $this->normalizePhone($m[1]);
+        }
+
+        if (preg_match('/\d{10,14}/', $text, $m2)) {
+            $n = $this->normalizePhone($m2[0]);
+            return $n ?: null;
+        }
+
+        return null;
+    }
+
+    private function normalizePhone(?string $phone): ?string
+    {
+        $n = preg_replace('/\D+/', '', (string) $phone) ?? '';
+        $n = trim($n);
+
+        if ($n === '') return null;
+
+        if (! str_starts_with($n, '55')) {
+            if (strlen($n) >= 10 && strlen($n) <= 11) {
+                $n = '55' . $n;
+            }
+        }
+
+        if (! preg_match('/^55\d{10,13}$/', $n)) return null;
+
+        return $n;
+    }
+
+    private function cleanNullableString(?string $v): ?string
+    {
+        $v = trim((string) $v);
+        return $v === '' ? null : $v;
+    }
+
+    private function extractMessageLogByTextFallback(\DOMDocument $dom): array
+    {
+        // (mantido igual ao seu)
+        $ids = [
+            'property-message_log',
+            'property-message_log_info',
+            'property-messages_log',
+            'property-billing_info',
+            'property-bilhetagem',
+        ];
+
+        $sectionHtml = '';
+        foreach ($ids as $id) {
+            $sectionHtml = $this->extractPropertySectionHtml($dom, $id);
+            if (trim($sectionHtml) !== '') break;
         }
 
         if (trim($sectionHtml) === '') return [];
@@ -654,138 +789,69 @@ class RecordsHtmlParser
             'type' => null,
         ];
 
-        $push = function () use (&$rows, &$current) {
-            if (! is_array($current)) {
-                $current = null;
-                return;
-            }
-
-            $hasRecipient = ! empty(trim((string) ($current['recipient'] ?? '')));
-            $hasTs = $current['timestamp_utc'] instanceof Carbon;
-
-            if ($hasRecipient || $hasTs) {
-                $rows[] = $current;
-            }
-
-            $current = null;
-        };
-
-        $rxUtc = '/\b([0-9]{4}-[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2}:[0-9]{2})\s*UTC\b/i';
-        $rxRecipient = '/\bRecipient\s*([0-9]{10,16})\b/i';
-        $rxSender = '/\bSender\s*(.+)$/i';
-        $rxMessageId = '/\bMessage\s*ID\s*([^\s]+)\b/i';
-        $rxType = '/\bType\s*(.+)$/i';
-        $rxSenderIp = '/\bSender\s*IP\s*([^\s]+)\b/i';
-        $rxSenderPort = '/\bSender\s*Port\s*(\d{1,6})\b/i';
-
         for ($i = 0; $i < count($lines); $i++) {
             $line = $lines[$i];
-            $label = mb_strtolower(preg_replace('/\s+/u', ' ', $line) ?? $line);
-            $next = $lines[$i + 1] ?? null;
+            $lc = mb_strtolower($line);
 
-            // início de registro por label/valor na próxima linha
-            if (in_array($label, ['timestamp', 'time', 'sent time', 'message time'], true)) {
-                $push();
+            if (in_array($lc, ['message', 'timestamp', 'message id', 'message id:'], true)) {
+                if ($current && ! empty($current['recipient'])) $rows[] = $current;
                 $current = $newRow();
-                if ($next) {
-                    $current['timestamp_utc'] = $this->parseUtcFlexible($next);
-                    $i++;
-                }
-                continue;
-            }
-
-            // label/valor na próxima linha
-            if ($label === 'message id' && $next) {
-                $current ??= $newRow();
-                $current['message_id'] = trim($next) !== '' ? trim($next) : null;
-                $i++;
-                continue;
-            }
-
-            if ($label === 'sender' && $next) {
-                $current ??= $newRow();
-                $current['sender'] = trim($next) !== '' ? trim($next) : null;
-                $i++;
-                continue;
-            }
-
-            if ($label === 'recipient' && $next) {
-                $current ??= $newRow();
-                $current['recipient'] = trim($next) !== '' ? trim($next) : null;
-                $i++;
-                continue;
-            }
-
-            if ($label === 'sender ip' && $next) {
-                $current ??= $newRow();
-                $current['sender_ip'] = trim($next) !== '' ? trim($next) : null;
-                $i++;
-                continue;
-            }
-
-            if ($label === 'sender port' && $next) {
-                $current ??= $newRow();
-                $n = preg_replace('/\D+/', '', (string) $next) ?? '';
-                $current['sender_port'] = $n !== '' ? $n : null;
-                $i++;
-                continue;
-            }
-
-            if ($label === 'type' && $next) {
-                $current ??= $newRow();
-                $current['type'] = trim($next) !== '' ? trim($next) : null;
-                $i++;
-                continue;
-            }
-
-            // linha única: inicia por timestamp
-            if (preg_match($rxUtc, $line, $m)) {
-                $push();
-                $current = $newRow();
-                $current['timestamp_utc'] = $this->parseUtcFlexible($m[1] . ' UTC');
             }
 
             if (! $current) continue;
 
-            if (preg_match($rxMessageId, $line, $m)) {
-                $current['message_id'] = trim($m[1]) ?: null;
+            if ($lc === 'timestamp') {
+                $v = $lines[$i + 1] ?? null;
+                $current['timestamp_utc'] = $this->parseUtcFlexible((string) $v);
+                $i++;
+                continue;
             }
 
-            if (preg_match($rxRecipient, $line, $m)) {
-                $current['recipient'] = trim($m[1]) ?: null;
+            if ($lc === 'message id' || $lc === 'message id:') {
+                $v = $lines[$i + 1] ?? null;
+                $current['message_id'] = $this->cleanNullableString((string) $v);
+                $i++;
+                continue;
             }
 
-            if (preg_match($rxSenderIp, $line, $m)) {
-                $current['sender_ip'] = trim($m[1]) ?: null;
+            if ($lc === 'sender') {
+                $v = $lines[$i + 1] ?? null;
+                $current['sender'] = $this->cleanNullableString((string) $v);
+                $i++;
+                continue;
             }
 
-            if (preg_match($rxSenderPort, $line, $m)) {
-                $current['sender_port'] = trim($m[1]) ?: null;
+            if ($lc === 'recipients' || $lc === 'recipient') {
+                $v = $lines[$i + 1] ?? null;
+                $current['recipient'] = $this->extractFirstPhone((string) $v);
+                $i++;
+                continue;
             }
 
-            if (preg_match($rxType, $line, $m)) {
-                $val = trim((string) $m[1]);
-                if ($val !== '') $current['type'] = $val;
+            if (in_array($lc, ['sender ip', 'sender ip:'], true)) {
+                $v = $lines[$i + 1] ?? null;
+                $current['sender_ip'] = $this->cleanNullableString((string) $v);
+                $i++;
+                continue;
             }
 
-            // evita capturar Sender IP/Port como Sender
-            if (! str_contains($label, 'sender ip') && ! str_contains($label, 'sender port')) {
-                if (preg_match($rxSender, $line, $m)) {
-                    $val = trim((string) $m[1]);
-                    if ($val !== '' && ! preg_match('/^(ip|port)\b/i', $val)) {
-                        $current['sender'] = $val;
-                    }
-                }
+            if ($lc === 'sender port') {
+                $v = $lines[$i + 1] ?? null;
+                $v = $this->cleanNullableString((string) $v);
+                $current['sender_port'] = $v !== null ? (int) preg_replace('/\D+/', '', $v) : null;
+                $i++;
+                continue;
+            }
+
+            if ($lc === 'type') {
+                $v = $lines[$i + 1] ?? null;
+                $current['type'] = $this->cleanNullableString((string) $v);
+                $i++;
+                continue;
             }
         }
 
-        $push();
-
-        usort($rows, function ($a, $b) {
-            $ta = ($a['timestamp_utc'] ?? null) instanceof Carbon ? $a['timestamp_utc']->timestamp : 0;
-            $tb = ($b['timestamp_utc'] ?? null) instanceof Carbon ? $b['timestamp_utc']->timestamp : 0;
-            return $tb <=> $ta;
-        });
+        if ($current && ! empty($current['recipient'])) $rows[] = $current;
 
         return $rows;
     }

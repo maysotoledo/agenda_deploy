@@ -1,0 +1,320 @@
+<?php
+
+namespace App\Filament\Pages;
+
+use App\Models\AnaliseRun;
+use BezhanSalleh\FilamentShield\Traits\HasPageShield;
+use Filament\Actions\BulkAction;
+use Filament\Notifications\Notification;
+use Filament\Pages\Page;
+use Filament\Tables;
+use Filament\Tables\Contracts\HasTable;
+use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Collection;
+use Livewire\Attributes\On;
+
+class MeusRelatorios extends Page implements HasTable
+{
+    use HasPageShield;
+    use Tables\Concerns\InteractsWithTable;
+
+    protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-document-text';
+    protected static ?string $navigationLabel = 'Meus Relatórios';
+    protected static ?string $title = 'Meus Relatórios';
+    protected static ?string $slug = 'meus-relatorios';
+
+    protected string $view = 'filament.pages.meus-relatorios';
+
+    public static function getNavigationGroup(): string|\UnitEnum|null
+    {
+        return 'Análise Telemática';
+    }
+
+    public static function getNavigationSort(): ?int
+    {
+        return 5;
+    }
+
+    public function table(Table $table): Table
+    {
+        return $table
+            ->deferLoading()
+            ->query($this->getTableQuery())
+            ->defaultSort('id', 'desc')
+
+            ->toolbarActions([
+                BulkAction::make('deleteSelected')
+                    ->label('Excluir selecionados')
+                    ->icon('heroicon-o-trash')
+                    ->color('danger')
+                    ->requiresConfirmation()
+                    ->modalHeading('Excluir relatórios selecionados')
+                    ->modalDescription('Essa ação não pode ser desfeita. Deseja realmente excluir os relatórios selecionados?')
+                    ->modalSubmitActionLabel('Excluir')
+                    ->fetchSelectedRecords(false)
+                    ->action(function (Collection $records): void {
+                        $ids = $records->values()->all();
+
+                        if (count($ids) === 0) {
+                            Notification::make()
+                                ->title('Nenhum relatório selecionado.')
+                                ->warning()
+                                ->send();
+                            return;
+                        }
+
+                        $deleted = AnaliseRun::query()
+                            ->whereKey($ids)
+                            ->where('user_id', auth()->id())
+                            ->delete();
+
+                        Notification::make()
+                            ->title("{$deleted} relatório(s) excluído(s) com sucesso.")
+                            ->success()
+                            ->send();
+                    })
+                    ->deselectRecordsAfterCompletion(),
+            ])
+
+            ->columns([
+                Tables\Columns\TextColumn::make('id')
+                    ->label('ID')
+                    ->sortable()
+                    ->searchable(),
+
+                Tables\Columns\TextColumn::make('source_label')
+                    ->label('Tipo')
+                    ->state(fn (AnaliseRun $record): string => $this->resolveSourceLabel($record))
+                    ->badge()
+                    ->color(fn (string $state): string => match ($state) {
+                        'WhatsApp' => 'success',
+                        'Instagram' => 'info',
+                        'Genérico' => 'warning',
+                        default => 'gray',
+                    }),
+
+                Tables\Columns\TextColumn::make('target')
+                    ->label('Alvo')
+                    ->state(function (AnaliseRun $record): string {
+                        $source = $this->resolveSource($record);
+
+                        if ($source === 'instagram') {
+                            // ✅ IGUAL AO RESUMO: vem do parsed -> account_identifier
+                            // report = ['_source' => 'instagram', '_parsed' => [...]]
+                            $ig = $this->resolveInstagramHandleFromRun($record);
+
+                            if ($ig === '') {
+                                return '—';
+                            }
+
+                            return str_starts_with($ig, '@') ? $ig : "@{$ig}";
+                        }
+
+                        if ($source === 'generico') {
+                            return 'Run #' . $record->id;
+                        }
+
+                        return $record->target ?: '-';
+                    })
+                    ->searchable()
+                    ->copyable()
+                    ->wrap(),
+
+                Tables\Columns\TextColumn::make('status')
+                    ->label('Status')
+                    ->badge()
+                    ->formatStateUsing(fn (string $state): string => match ($state) {
+                        'done' => 'Concluído',
+                        'running' => 'Processando',
+                        'error' => 'Erro',
+                        default => ucfirst($state),
+                    })
+                    ->color(fn (string $state): string => match ($state) {
+                        'done' => 'success',
+                        'running' => 'warning',
+                        'error' => 'danger',
+                        default => 'gray',
+                    })
+                    ->sortable(),
+
+                Tables\Columns\TextColumn::make('progress')
+                    ->label('Progresso')
+                    ->suffix('%')
+                    ->sortable(),
+
+                // Tables\Columns\TextColumn::make('total_unique_ips')
+                //     ->label('IPs únicos')
+                //     ->numeric()
+                //     ->sortable(),
+
+                // Tables\Columns\TextColumn::make('processed_unique_ips')
+                //     ->label('IPs processados')
+                //     ->numeric()
+                //     ->sortable(),
+
+                Tables\Columns\TextColumn::make('created_at')
+                    ->label('Criado em')
+                    ->dateTime('d/m/Y H:i:s')
+                    ->sortable(),
+
+                Tables\Columns\ViewColumn::make('acoes')
+                    ->label('Ações')
+                    ->view('filament.pages.partials.meus-relatorios-acoes'),
+            ])
+
+            ->filters([
+                Tables\Filters\SelectFilter::make('status')
+                    ->label('Status')
+                    ->options([
+                        'done' => 'Finalizado',
+                        'running' => 'Processando',
+                        'error' => 'Erro',
+                    ]),
+
+                Tables\Filters\SelectFilter::make('source')
+                    ->label('Tipo')
+                    ->options([
+                        'whatsapp' => 'WhatsApp',
+                        'instagram' => 'Instagram',
+                        'generico' => 'Genérico',
+                    ])
+                    ->query(function (Builder $query, array $data): Builder {
+                        $value = $data['value'] ?? null;
+
+                        if (! $value) {
+                            return $query;
+                        }
+
+                        if ($value === 'generico') {
+                            return $query->where(function (Builder $q) {
+                                $q->where('report->_source', 'generico')
+                                    ->orWhere('report->_source', 'generic');
+                            });
+                        }
+
+                        return $query->where('report->_source', $value);
+                    }),
+            ])
+            ->paginated([10, 25, 50])
+            ->defaultPaginationPageOption(10);
+    }
+
+    protected function getTableQuery(): Builder
+    {
+        return AnaliseRun::query()
+            ->with('user')
+            ->where('user_id', auth()->id())
+            ->select([
+                'analise_runs.id',
+                'analise_runs.user_id',
+                'analise_runs.target',
+                'analise_runs.report', // ✅ precisamos ler report._parsed.account_identifier
+                'analise_runs.status',
+                'analise_runs.progress',
+                'analise_runs.total_unique_ips',
+                'analise_runs.processed_unique_ips',
+                'analise_runs.created_at',
+            ])
+            ->selectRaw("LOWER(JSON_UNQUOTE(JSON_EXTRACT(analise_runs.report, '$._source'))) as source_extracted");
+    }
+
+    /**
+     * Pega o username IG do lugar correto:
+     * report['_parsed']['account_identifier'] (igual o resumo usa via aggregator)
+     */
+    protected function resolveInstagramHandleFromRun(AnaliseRun $run): string
+    {
+        $report = $run->report;
+
+        // se por algum motivo vier como string JSON, decodifica
+        if (is_string($report) && trim($report) !== '') {
+            $decoded = json_decode($report, true);
+            if (is_array($decoded)) {
+                $report = $decoded;
+            }
+        }
+
+        // ✅ lugar correto (conforme você salva na criação do run)
+        $ig = trim((string) data_get($report, '_parsed.account_identifier'));
+
+        // fallback: alguns lugares alternativos (se mudar o formato no futuro)
+        if ($ig === '') {
+            $ig = trim((string) data_get($report, 'account_identifier'));
+        }
+
+        // fallback final
+        if ($ig === '') {
+            $ig = trim((string) ($run->target ?? ''));
+        }
+
+        // se for só número, não é username
+        if ($ig !== '' && preg_match('/^\d+$/', $ig)) {
+            return '';
+        }
+
+        return $ig;
+    }
+
+    public function resolveSource(AnaliseRun $run): string
+    {
+        $source = $run->source_extracted ?? null;
+
+        if (is_string($source) && trim($source) !== '') {
+            $source = strtolower(trim($source));
+
+            if ($source === 'generic') {
+                return 'generico';
+            }
+
+            if (in_array($source, ['whatsapp', 'instagram', 'generico'], true)) {
+                return $source;
+            }
+        }
+
+        return 'whatsapp';
+    }
+
+    public function resolveSourceLabel(AnaliseRun $run): string
+    {
+        return match ($this->resolveSource($run)) {
+            'instagram' => 'Instagram',
+            'whatsapp' => 'WhatsApp',
+            'generico' => 'Genérico',
+            default => 'Genérico',
+        };
+    }
+
+    public function resolveViewUrl(AnaliseRun $run): string
+    {
+        return match ($this->resolveSource($run)) {
+            'instagram' => AnaliseInteligenteInsta::getUrl(['run' => $run->id]),
+            'generico' => AnaliseInteligenteGenerico::getUrl(['run' => $run->id]),
+            default => AnaliseInteligenteWPP::getUrl(['run' => $run->id]),
+        };
+    }
+
+    #[On('delete-run')]
+    public function deleteRun(int $runId): void
+    {
+        $run = AnaliseRun::query()
+            ->whereKey($runId)
+            ->where('user_id', auth()->id())
+            ->first();
+
+        if (! $run) {
+            Notification::make()
+                ->title('Relatório não encontrado ou você não tem permissão.')
+                ->danger()
+                ->send();
+            return;
+        }
+
+        $run->delete();
+
+        Notification::make()
+            ->title('Relatório excluído')
+            ->success()
+            ->send();
+    }
+}

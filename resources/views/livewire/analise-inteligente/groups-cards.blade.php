@@ -24,7 +24,10 @@
     @else
         <div class="space-y-4">
             @foreach ($pagedRows as $idx => $r)
-                <div class="rounded-2xl border bg-white p-4 shadow-sm" wire:key="group-card-{{ $page }}-{{ $idx }}-{{ $r['id'] ?? $idx }}">
+                <div
+                    class="rounded-2xl border bg-white p-4 shadow-sm"
+                    wire:key="group-card-{{ $page }}-{{ $idx }}-{{ $r['id'] ?? $idx }}"
+                >
                     {{-- ID --}}
                     <div class="text-xs text-gray-500">
                         ID do grupo
@@ -33,7 +36,7 @@
                         {{ $r['id'] ?? '-' }}
                     </div>
 
-                    {{-- Nome + participantes + criação --}}
+                    {{-- Nome + participantes --}}
                     <div class="mt-3 flex flex-wrap items-center justify-between gap-3">
                         <div class="min-w-0">
                             <div class="text-xs text-gray-500">
@@ -45,19 +48,27 @@
                         </div>
 
                         <div class="flex flex-wrap items-center gap-3">
-                            <div class="rounded-xl border px-3 py-2">
-                                <div class="text-xs text-gray-500">Participantes</div>
-                                <div class="text-sm font-semibold text-gray-900">
-                                    {{ isset($r['membros']) ? number_format((int) $r['membros'], 0, ',', '.') : '-' }}
+                            {{-- ✅ Participantes (número centralizado garantido com flex) --}}
+                            <div class="rounded-xl border px-3 py-2 w-36">
+                                <div class="text-xs text-gray-500 text-center">
+                                    Participantes
+                                </div>
+
+                                <div class="mt-1 flex items-center justify-center">
+                                    <div class="text-sm font-semibold text-gray-900">
+                                        {{ isset($r['membros']) ? number_format((int) $r['membros'], 0, ',', '.') : '-' }}
+                                    </div>
                                 </div>
                             </div>
 
+                            {{--
                             <div class="rounded-xl border px-3 py-2">
                                 <div class="text-xs text-gray-500">Criação (GMT-3)</div>
                                 <div class="text-sm font-semibold text-gray-900 whitespace-nowrap">
                                     {{ $r['criacao'] ?? '-' }}
                                 </div>
                             </div>
+                            --}}
                         </div>
                     </div>
 

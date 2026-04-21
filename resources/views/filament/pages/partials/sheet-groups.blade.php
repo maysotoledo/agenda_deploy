@@ -34,12 +34,12 @@
                                 </div>
                             </div>
 
-                            {{-- <div class="rounded-xl border px-3 py-2">
+                            <div class="rounded-xl border px-3 py-2">
                                 <div class="text-xs text-gray-500">Criação (GMT-3)</div>
                                 <div class="text-sm font-semibold text-gray-900 whitespace-nowrap">
                                     {{ $r['criacao'] ?? '-' }}
                                 </div>
-                            </div> --}}
+                            </div>
                         </div>
                     </div>
 

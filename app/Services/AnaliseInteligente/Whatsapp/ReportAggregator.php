@@ -8,7 +8,8 @@ class ReportAggregator
 {
     public function buildReport(array $parsed, array $enrichedByIp): array
     {
-        $tz = 'America/Belem';
+        $tz = 'America/Sao_Paulo';
+
         $events = $parsed['ip_events'] ?? [];
 
         $generatedAt = $this->extractGeneratedAt($parsed, $tz);
@@ -28,18 +29,27 @@ class ReportAggregator
             : $this->extractAsymmetricContactsCount($parsed);
 
         $groupsRows = $this->buildGroupsRows($parsed['groups'] ?? [], $tz);
-        $connectionSummary = $this->buildConnectionSummary($parsed['connection_info'] ?? [], $tz);
 
-        // agenda p/ badge
+        // ✅ GARANTIA: connection_summary.last_seen vem SOMENTE do Connection do log (sem fallback)
+        $connectionSummary = $this->buildConnectionSummary(
+            (array) ($parsed['connection_info'] ?? []),
+            $enrichedByIp,
+            $tz
+        );
+
         $agendaPhones = [];
         foreach (array_merge($symmetricContacts, $asymmetricContacts) as $p) {
             $agendaPhones[(string) $p] = true;
         }
 
-        // ✅ bilhetagem cards no formato do Blade
-        $bilhetagemCards = $this->buildBilhetagemCards($parsed['message_log'] ?? [], $agendaPhones, $tz);
+        $bilhetagemCards = $this->buildBilhetagemCards(
+            $parsed['message_log'] ?? [],
+            $agendaPhones,
+            $enrichedByIp,
+            $tz
+        );
 
-        // --- restante do seu código de IPs (mantido) ---
+        // --- IPs / Timeline / etc ---
         $timelineRows = [];
         $uniqueIpAgg = [];
         $providerStatsAgg = [];
@@ -77,7 +87,7 @@ class ReportAggregator
             $type = $mobile ? 'Móvel' : 'Residencial';
 
             $timelineRows[] = [
-                'datetime' => $timeLocal->format('Y-m-d H:i:s'),
+                'datetime' => $timeLocal->format('d/m/Y H:i:s'),
                 'ip' => $ipDisplay,
                 'provider' => $provider,
                 'city' => $city,
@@ -148,7 +158,7 @@ class ReportAggregator
             if ($isNight) {
                 $nightTotalEvents++;
                 $nightEventsRows[] = [
-                    'datetime' => $timeLocal->format('Y-m-d H:i:s'),
+                    'datetime' => $timeLocal->format('d/m/Y H:i:s'),
                     'ip' => $ipDisplay,
                     'provider' => $provider,
                     'city' => $city,
@@ -159,15 +169,13 @@ class ReportAggregator
             if ($mobile) {
                 $mobileTotalEvents++;
                 $mobileEventsRows[] = [
-                    'datetime' => $timeLocal->format('Y-m-d H:i:s'),
+                    'datetime' => $timeLocal->format('d/m/Y H:i:s'),
                     'ip' => $ipDisplay,
                     'provider' => $provider,
                     'city' => $city,
                 ];
             }
         }
-
-        usort($timelineRows, fn ($a, $b) => strcmp($b['datetime'], $a['datetime']));
 
         $uniqueIpRows = array_values($uniqueIpAgg);
         usort($uniqueIpRows, fn ($a, $b) => ($b['count'] <=> $a['count']) ?: ($b['last_seen']->timestamp <=> $a['last_seen']->timestamp));
@@ -177,7 +185,7 @@ class ReportAggregator
             'city' => $r['city'],
             'type' => $r['type'],
             'count' => $r['count'],
-            'last_seen' => $r['last_seen']->format('Y-m-d H:i:s'),
+            'last_seen' => $r['last_seen']->format('d/m/Y H:i:s'),
         ], $uniqueIpRows);
 
         $providerStatsRows = [];
@@ -192,7 +200,7 @@ class ReportAggregator
                 'cities' => count($s['cities']),
                 'mobile_occurrences' => $mob,
                 'mobile_percent' => $occ > 0 ? round(($mob / $occ) * 100, 2) : 0,
-                'last_seen' => $s['last_seen']->format('Y-m-d H:i:s'),
+                'last_seen' => $s['last_seen']->format('d/m/Y H:i:s'),
             ];
         }
         usort($providerStatsRows, fn ($a, $b) => ($b['occurrences'] <=> $a['occurrences']));
@@ -209,7 +217,7 @@ class ReportAggregator
                 'providers' => count($s['providers']),
                 'mobile_occurrences' => $mob,
                 'mobile_percent' => $occ > 0 ? round(($mob / $occ) * 100, 2) : 0,
-                'last_seen' => $s['last_seen']->format('Y-m-d H:i:s'),
+                'last_seen' => $s['last_seen']->format('H:i:s d/m/Y'),
             ];
         }
         usort($cityStatsRows, fn ($a, $b) => ($b['occurrences'] <=> $a['occurrences']));
@@ -222,14 +230,11 @@ class ReportAggregator
             $providerIpMapOut[$prov] = array_map(fn ($r) => [
                 'ip' => $r['ip'],
                 'count' => (int) $r['count'],
-                'last_seen' => $r['last_seen']->format('Y-m-d H:i:s'),
+                'last_seen' => $r['last_seen']->format('d/m/Y H:i:s'),
                 'city' => $r['city'] ?? '-',
                 'connection_type' => ($r['mobile'] ?? false) ? 'Móvel' : 'Residencial',
             ], $list);
         }
-
-        usort($nightEventsRows, fn ($a, $b) => strcmp($b['datetime'], $a['datetime']));
-        usort($mobileEventsRows, fn ($a, $b) => strcmp($b['datetime'], $a['datetime']));
 
         return [
             'generated_at' => $generatedAt,
@@ -239,15 +244,17 @@ class ReportAggregator
             'device' => $device,
             'period_label' => $periodLabel,
 
+            'registered_emails' => $parsed['registered_emails'] ?? [],
+
             'symmetric_contacts_count' => $symmetricContactsCount,
             'asymmetric_contacts_count' => $asymmetricContactsCount,
             'symmetric_contacts' => $symmetricContacts,
             'asymmetric_contacts' => $asymmetricContacts,
 
             'groups_rows' => $groupsRows,
+
             'connection_summary' => $connectionSummary,
 
-            // ✅ aqui é o que o Blade usa
             'bilhetagem_cards' => $bilhetagemCards,
 
             'timeline_rows' => $timelineRows,
@@ -271,7 +278,72 @@ class ReportAggregator
         ];
     }
 
-    private function buildBilhetagemCards(array $messageLog, array $agendaPhones, string $tz): array
+    /**
+     * ✅ GARANTIA: last_seen vem SOMENTE do Connection do log (sem fallback)
+     */
+    private function buildConnectionSummary(array $conn, array $enrichedByIp, string $tz): array
+    {
+        $rawLastSeen =
+            $conn['last_seen_utc'] ??
+            $conn['last_seen'] ??
+            $conn['last_seen_at'] ??
+            $conn['lastSeenUtc'] ??
+            $conn['lastSeen'] ??
+            $conn['lastSeenAt'] ??
+            null;
+
+        $lastSeenUtc = $this->toCarbonUtc($rawLastSeen);
+
+        $lastSeenLocal = $lastSeenUtc
+            ? $lastSeenUtc->copy()->setTimezone($tz)->format('d/m/Y H:i:s')
+            : null;
+
+        $lastIp = $conn['last_ip'] ?? ($conn['lastIp'] ?? null);
+        $ipBase = $this->extractIpBase(is_string($lastIp) ? $lastIp : null);
+
+        $provider = null;
+        if ($ipBase && isset($enrichedByIp[$ipBase])) {
+            $info = $enrichedByIp[$ipBase];
+            $provider = trim(($info['isp'] ?? '') ?: ($info['org'] ?? ''));
+            $provider = preg_replace('/\s+/u', ' ', $provider ?? '') ?? '';
+            if ($provider === '') $provider = null;
+        }
+
+        return [
+            'last_ip' => $lastIp,
+            'last_ip_provider' => $provider ?: 'Desconhecido',
+            'last_seen' => $lastSeenLocal,
+        ];
+    }
+
+    private function toCarbonUtc(mixed $value): ?Carbon
+    {
+        if ($value instanceof Carbon) return $value->copy()->setTimezone('UTC');
+        if (is_int($value)) return Carbon::createFromTimestamp($value, 'UTC');
+
+        if (is_string($value) && trim($value) !== '') {
+            try {
+                return Carbon::parse($value, 'UTC')->setTimezone('UTC');
+            } catch (\Throwable) {
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    private function extractIpBase(?string $ipWithPort): ?string
+    {
+        $ipWithPort = trim((string) $ipWithPort);
+        if ($ipWithPort === '') return null;
+
+        if (preg_match('/^\[([0-9a-fA-F:]+)\]:(\d{1,5})$/', $ipWithPort, $m)) return $m[1];
+        if (preg_match('/^(\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/', $ipWithPort, $m)) return $m[1];
+
+        return $ipWithPort;
+    }
+
+    private function buildBilhetagemCards(array $messageLog, array $agendaPhones, array $enrichedByIp, string $tz): array
     {
         $byRecipient = [];
 
@@ -282,14 +354,30 @@ class ReportAggregator
             if ($recipient === '') continue;
 
             $tsUtc = $this->toCarbonUtc($m['timestamp_utc'] ?? null);
-            $tsLocal = $tsUtc ? $tsUtc->copy()->setTimezone($tz)->format('Y-m-d H:i:s') : null;
+            $tsLocal = $tsUtc ? $tsUtc->copy()->setTimezone($tz)->format('d/m/Y H:i:s') : null;
+
+            $senderIp = $m['sender_ip'] ?? null;
+            $senderPort = $m['sender_port'] ?? null;
+            $type = $m['type'] ?? null;
+            $messageId = $m['message_id'] ?? null;
+
+            $ipBase = $this->extractIpBase(is_string($senderIp) ? $senderIp : null);
+
+            $provider = null;
+            if ($ipBase && isset($enrichedByIp[$ipBase])) {
+                $info = $enrichedByIp[$ipBase];
+                $provider = trim(($info['isp'] ?? '') ?: ($info['org'] ?? ''));
+                $provider = preg_replace('/\s+/u', ' ', $provider ?? '') ?? '';
+                if ($provider === '') $provider = null;
+            }
 
             $row = [
                 'timestamp' => $tsLocal,
-                'sender_ip' => ($m['sender_ip'] ?? null) ?: null,
-                'sender_port' => ($m['sender_port'] ?? null) ?: null,
-                'type' => ($m['type'] ?? null) ?: null,
-                'message_id' => ($m['message_id'] ?? null) ?: null,
+                'sender_ip' => $senderIp,
+                'sender_port' => $senderPort,
+                'sender_provider' => $provider ?: 'Desconhecido',
+                'type' => $type,
+                'message_id' => $messageId,
             ];
 
             $byRecipient[$recipient] ??= [
@@ -303,30 +391,21 @@ class ReportAggregator
             $byRecipient[$recipient]['rows'][] = $row;
         }
 
-        if (! $byRecipient) return [];
-
         $cards = [];
         foreach ($byRecipient as $recipient => $data) {
             $rows = $data['rows'];
-
             usort($rows, fn ($a, $b) => strcmp((string) ($b['timestamp'] ?? ''), (string) ($a['timestamp'] ?? '')));
-
-            $latest = $rows[0] ?? null;
-            $others = array_slice($rows, 1, 10);
 
             $cards[] = [
                 'recipient' => $recipient,
                 'in_agenda' => (bool) ($data['in_agenda'] ?? false),
                 'total' => (int) ($data['total'] ?? 0),
-                'latest' => $latest,
-                'others' => $others,
+                'latest' => $rows[0] ?? null,
+                'others' => [],
             ];
         }
 
-        usort($cards, fn ($a, $b) =>
-            ($b['total'] <=> $a['total'])
-            ?: strcmp((string) data_get($b, 'latest.timestamp', ''), (string) data_get($a, 'latest.timestamp', ''))
-        );
+        usort($cards, fn ($a, $b) => ($b['total'] <=> $a['total']));
 
         return $cards;
     }
@@ -343,7 +422,7 @@ class ReportAggregator
             $createdLocal = null;
 
             if ($createdUtc instanceof Carbon) {
-                $createdLocal = $createdUtc->copy()->setTimezone($tz)->format('Y-m-d H:i:s');
+                $createdLocal = $createdUtc->copy()->setTimezone($tz)->format('d/m/Y H:i:s');
             }
 
             $rows[] = [
@@ -359,43 +438,7 @@ class ReportAggregator
         foreach ($owned as $g) $push((array) $g, 'Criado (Owned)');
         foreach ($part as $g) $push((array) $g, 'Participa');
 
-        usort($rows, fn ($a, $b) => strcmp((string) ($b['criacao'] ?? ''), (string) ($a['criacao'] ?? '')));
-
         return $rows;
-    }
-
-    private function buildConnectionSummary(array $conn, string $tz): array
-    {
-        $serviceStartLocal = null;
-        if (($conn['service_start_utc'] ?? null) instanceof Carbon) {
-            $serviceStartLocal = $conn['service_start_utc']->copy()->setTimezone($tz)->format('Y-m-d H:i:s');
-        }
-
-        $lastSeenLocal = null;
-        if (($conn['last_seen_utc'] ?? null) instanceof Carbon) {
-            $lastSeenLocal = $conn['last_seen_utc']->copy()->setTimezone($tz)->format('Y-m-d H:i:s');
-        }
-
-        return array_filter([
-            'device_id' => $conn['device_id'] ?? null,
-            'service_start' => $serviceStartLocal,
-            'device_type' => $conn['device_type'] ?? null,
-            'app_version' => $conn['app_version'] ?? null,
-            'device_os_build_number' => $conn['device_os_build_number'] ?? null,
-            'connection_state' => $conn['connection_state'] ?? null,
-            'last_seen' => $lastSeenLocal,
-            'last_ip' => $conn['last_ip'] ?? null,
-        ], fn ($v) => $v !== null && $v !== '');
-    }
-
-    private function toCarbonUtc(mixed $value): ?Carbon
-    {
-        if ($value instanceof Carbon) return $value->copy()->setTimezone('UTC');
-        if (is_int($value)) return Carbon::createFromTimestamp($value, 'UTC');
-        if (is_string($value) && trim($value) !== '') {
-            try { return Carbon::parse($value, 'UTC'); } catch (\Throwable) { return null; }
-        }
-        return null;
     }
 
     private function extractGeneratedAt(array $parsed, string $tz): ?string
@@ -407,7 +450,7 @@ class ReportAggregator
             $parsed['summary']['generated_at'] ?? null,
         ] as $value) {
             $dt = $this->toCarbonUtc($value);
-            if ($dt) return $dt->copy()->setTimezone($tz)->format('d/m/Y - H:i:s');
+            if ($dt) return $dt->copy()->setTimezone($tz)->format('d/m/Y H:i:s');
             if (is_string($value) && trim($value) !== '') return trim($value);
         }
         return null;
@@ -417,11 +460,9 @@ class ReportAggregator
     {
         foreach ([
             $parsed['file_hash'] ?? null,
-            $parsed['sha256'] ?? null,
             $parsed['hash'] ?? null,
             $parsed['meta']['file_hash'] ?? null,
-            $parsed['meta']['sha256'] ?? null,
-            $parsed['summary']['file_hash'] ?? null,
+            $parsed['meta']['hash'] ?? null,
         ] as $value) {
             if (is_string($value) && trim($value) !== '') return trim($value);
         }
@@ -432,22 +473,10 @@ class ReportAggregator
     {
         foreach ([
             $parsed['device'] ?? null,
-            $parsed['device_name'] ?? null,
-            $parsed['device_info'] ?? null,
-            $parsed['summary']['device'] ?? null,
+            $parsed['device_model'] ?? null,
+            $parsed['meta']['device'] ?? null,
         ] as $value) {
             if (is_string($value) && trim($value) !== '') return trim($value);
-
-            if (is_array($value)) {
-                $parts = array_filter([
-                    $value['brand'] ?? null,
-                    $value['model'] ?? null,
-                    $value['name'] ?? null,
-                    $value['device'] ?? null,
-                ], fn ($v) => is_string($v) && trim($v) !== '');
-
-                if ($parts) return implode(' - ', array_unique(array_map('trim', $parts)));
-            }
         }
         return null;
     }
@@ -457,26 +486,13 @@ class ReportAggregator
         $start = $this->toCarbonUtc($parsed['range_start_utc'] ?? null);
         $end = $this->toCarbonUtc($parsed['range_end_utc'] ?? null);
 
-        if (! $start || ! $end) {
-            $times = [];
-            foreach ($events as $e) {
-                $dt = $this->toCarbonUtc($e['time_utc'] ?? null);
-                if ($dt) $times[] = $dt;
-            }
-            if ($times) {
-                usort($times, fn ($a, $b) => $a->timestamp <=> $b->timestamp);
-                $start = $start ?: $times[0];
-                $end = $end ?: $times[count($times) - 1];
-            }
-        }
-
         if ($start && $end) {
-            return $start->copy()->setTimezone($tz)->format('d/m/Y H:i:s')
-                . ' até '
-                . $end->copy()->setTimezone($tz)->format('d/m/Y H:i:s');
+            // período em BR (mantém legível)
+            return $start->copy()->setTimezone($tz)->format('d/m/Y H:i') . ' até ' . $end->copy()->setTimezone($tz)->format('d/m/Y H:i');
         }
 
-        return null;
+        $raw = $parsed['date_range'] ?? null;
+        return is_string($raw) && trim($raw) !== '' ? trim($raw) : null;
     }
 
     private function extractSymmetricContactsCount(array $parsed): int
@@ -485,9 +501,10 @@ class ReportAggregator
             $parsed['symmetric_contacts_count'] ?? null,
             $parsed['symmetric_contacts_total'] ?? null,
         ] as $value) {
+            if (is_int($value)) return $value;
             if (is_numeric($value)) return (int) $value;
         }
-        return is_array($parsed['symmetric_contacts'] ?? null) ? count($parsed['symmetric_contacts']) : 0;
+        return 0;
     }
 
     private function extractAsymmetricContactsCount(array $parsed): int
@@ -496,8 +513,9 @@ class ReportAggregator
             $parsed['asymmetric_contacts_count'] ?? null,
             $parsed['asymmetric_contacts_total'] ?? null,
         ] as $value) {
+            if (is_int($value)) return $value;
             if (is_numeric($value)) return (int) $value;
         }
-        return is_array($parsed['asymmetric_contacts'] ?? null) ? count($parsed['asymmetric_contacts']) : 0;
+        return 0;
     }
 }

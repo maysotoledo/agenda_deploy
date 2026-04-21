@@ -207,6 +207,17 @@
                 </div>
             </div>
 
+            {{-- Agili Telecom --}}
+            <div class="cx-card">
+                <div class="cx-logo">
+                    <img src="{{ $logo('agilinet.png') }}" alt="Plugnet" onerror="this.style.display='none'">
+                </div>
+                <div class="cx-title">R M Interweb Ltda</div>
+                <div class="cx-body">
+                    <div style="margin-top:8px;"><b>📲 Telefone:</b> (66) 98421-0714</div>
+                </div>
+            </div>
+
         </div>
     </div>
 
