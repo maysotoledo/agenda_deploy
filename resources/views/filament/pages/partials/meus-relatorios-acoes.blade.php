@@ -1,8 +1,8 @@
 @php
-    /** @var \App\Models\AnaliseRun $record */
+    /** @var \App\Models\AnaliseInvestigation $record */
     $record = $getRecord();
     $viewUrl = $this->resolveViewUrl($record);
-    $runId = $record->id;
+    $investigationId = $record->id;
 @endphp
 
 <div class="flex items-center gap-2">
@@ -12,15 +12,15 @@
         size="xs"
         color="primary"
     >
-        Ver
+        Ver relatório
     </x-filament::button>
 
     <x-filament::button
         type="button"
         size="xs"
         color="danger"
-        wire:click="$dispatch('delete-run', { runId: {{ $runId }} })"
-        wire:confirm="Tem certeza que deseja excluir este relatório?"
+        wire:click="$dispatch('delete-investigation', { investigationId: {{ $investigationId }} })"
+        wire:confirm="Tem certeza que deseja excluir esta investigação e todos os alvos vinculados?"
     >
         Excluir
     </x-filament::button>

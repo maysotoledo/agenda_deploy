@@ -3,6 +3,7 @@
 namespace App\Filament\Pages;
 
 use App\Models\AnaliseRun;
+use App\Models\AnaliseInvestigation;
 use App\Models\AnaliseRunIp;
 use App\Models\IpEnrichment;
 use App\Services\AnaliseInteligente\Instagram\RecordsHtmlParser;
@@ -190,8 +191,16 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
         }
 
         $run = DB::transaction(function () use ($mainParsed, $ipsMap) {
+            $investigation = AnaliseInvestigation::create([
+                'user_id' => auth()->id(),
+                'uuid' => (string) Str::uuid(),
+                'name' => $this->instagramInvestigationName($mainParsed),
+                'source' => 'instagram',
+            ]);
+
             $run = AnaliseRun::create([
                 'user_id' => auth()->id(),
+                'investigation_id' => $investigation->id,
                 'uuid' => (string) Str::uuid(),
                 'target' => $mainParsed['target'] ?? null,
                 'total_unique_ips' => count($ipsMap),
@@ -223,6 +232,21 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
         $this->running = true;
 
         Notification::make()->title('Processamento iniciado')->success()->send();
+    }
+
+    protected function instagramInvestigationName(array $parsed): string
+    {
+        $handle = trim((string) ($parsed['account_identifier'] ?? ''));
+        if ($handle !== '' && ! preg_match('/^\d+$/', $handle)) {
+            return 'Instagram ' . (str_starts_with($handle, '@') ? $handle : "@{$handle}");
+        }
+
+        $target = trim((string) ($parsed['target'] ?? ''));
+        if ($target !== '') {
+            return 'Instagram ' . $target;
+        }
+
+        return 'Investigação Instagram';
     }
 
     public function poll(): void

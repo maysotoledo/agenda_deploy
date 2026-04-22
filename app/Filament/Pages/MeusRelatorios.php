@@ -2,6 +2,7 @@
 
 namespace App\Filament\Pages;
 
+use App\Models\AnaliseInvestigation;
 use App\Models\AnaliseRun;
 use BezhanSalleh\FilamentShield\Traits\HasPageShield;
 use Filament\Actions\BulkAction;
@@ -20,8 +21,8 @@ class MeusRelatorios extends Page implements HasTable
     use Tables\Concerns\InteractsWithTable;
 
     protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-document-text';
-    protected static ?string $navigationLabel = 'Meus Relatórios';
-    protected static ?string $title = 'Meus Relatórios';
+    protected static ?string $navigationLabel = 'Minhas Investigações';
+    protected static ?string $title = 'Minhas Investigações';
     protected static ?string $slug = 'meus-relatorios';
 
     protected string $view = 'filament.pages.meus-relatorios';
@@ -34,6 +35,11 @@ class MeusRelatorios extends Page implements HasTable
     public static function getNavigationSort(): ?int
     {
         return 90;
+    }
+
+    public function mount(): void
+    {
+        $this->ensureInvestigationsForOrphanRuns();
     }
 
     public function table(Table $table): Table
@@ -49,8 +55,8 @@ class MeusRelatorios extends Page implements HasTable
                     ->icon('heroicon-o-trash')
                     ->color('danger')
                     ->requiresConfirmation()
-                    ->modalHeading('Excluir relatórios selecionados')
-                    ->modalDescription('Essa ação não pode ser desfeita. Deseja realmente excluir os relatórios selecionados?')
+                    ->modalHeading('Excluir investigações selecionadas')
+                    ->modalDescription('Essa ação excluirá os relatórios dos alvos vinculados. Deseja continuar?')
                     ->modalSubmitActionLabel('Excluir')
                     ->fetchSelectedRecords(false)
                     ->action(function (Collection $records): void {
@@ -64,13 +70,17 @@ class MeusRelatorios extends Page implements HasTable
                             return;
                         }
 
-                        $deleted = AnaliseRun::query()
+                        $investigationIds = AnaliseInvestigation::query()
                             ->whereKey($ids)
                             ->where('user_id', auth()->id())
-                            ->delete();
+                            ->pluck('id')
+                            ->all();
+
+                        AnaliseRun::whereIn('investigation_id', $investigationIds)->delete();
+                        $deleted = AnaliseInvestigation::whereIn('id', $investigationIds)->delete();
 
                         Notification::make()
-                            ->title("{$deleted} relatório(s) excluído(s) com sucesso.")
+                            ->title("{$deleted} investigação(ões) excluída(s) com sucesso.")
                             ->success()
                             ->send();
                     })
@@ -85,65 +95,21 @@ class MeusRelatorios extends Page implements HasTable
 
                 Tables\Columns\TextColumn::make('source_label')
                     ->label('Tipo')
-                    ->state(fn (AnaliseRun $record): string => $this->resolveSourceLabel($record))
+                    ->state(fn (AnaliseInvestigation $record): string => $record->source === 'whatsapp' ? 'WhatsApp' : ucfirst($record->source))
                     ->badge()
-                    ->color(fn (string $state): string => match ($state) {
-                        'WhatsApp' => 'success',
-                        'Instagram' => 'info',
-                        'Genérico' => 'warning',
-                        default => 'gray',
-                    }),
+                    ->color(fn (string $state): string => $state === 'WhatsApp' ? 'success' : 'gray'),
 
-                Tables\Columns\TextColumn::make('target')
-                    ->label('Alvo')
-                    ->state(function (AnaliseRun $record): string {
-                        $source = $this->resolveSource($record);
-
-                        if ($source === 'instagram') {
-                            return $this->resolveInstagramAlvo($record);
-                        }
-
-                        if ($source === 'generico') {
-                            return 'Run #' . $record->id;
-                        }
-
-                        return $record->target ?: '-';
-                    })
+                Tables\Columns\TextColumn::make('name')
+                    ->label('Investigação')
                     ->searchable()
                     ->copyable()
                     ->wrap(),
 
-                Tables\Columns\TextColumn::make('status')
-                    ->label('Status')
-                    ->badge()
-                    ->formatStateUsing(fn (string $state): string => match ($state) {
-                        'done' => 'Concluído',
-                        'running' => 'Processando',
-                        'error' => 'Erro',
-                        default => ucfirst($state),
-                    })
-                    ->color(fn (string $state): string => match ($state) {
-                        'done' => 'success',
-                        'running' => 'warning',
-                        'error' => 'danger',
-                        default => 'gray',
-                    })
-                    ->sortable(),
-
-                Tables\Columns\TextColumn::make('progress')
+                Tables\Columns\TextColumn::make('runs_avg_progress')
                     ->label('Progresso')
+                    ->state(fn (AnaliseInvestigation $record): int => (int) round((float) ($record->runs_avg_progress ?? 0)))
                     ->suffix('%')
                     ->sortable(),
-
-                // Tables\Columns\TextColumn::make('total_unique_ips')
-                //     ->label('IPs únicos')
-                //     ->numeric()
-                //     ->sortable(),
-
-                // Tables\Columns\TextColumn::make('processed_unique_ips')
-                //     ->label('IPs processados')
-                //     ->numeric()
-                //     ->sortable(),
 
                 Tables\Columns\TextColumn::make('created_at')
                     ->label('Criado em')
@@ -155,14 +121,6 @@ class MeusRelatorios extends Page implements HasTable
                     ->view('filament.pages.partials.meus-relatorios-acoes'),
             ])
             ->filters([
-                Tables\Filters\SelectFilter::make('status')
-                    ->label('Status')
-                    ->options([
-                        'done' => 'Finalizado',
-                        'running' => 'Processando',
-                        'error' => 'Erro',
-                    ]),
-
                 Tables\Filters\SelectFilter::make('source')
                     ->label('Tipo')
                     ->options([
@@ -174,19 +132,7 @@ class MeusRelatorios extends Page implements HasTable
                     ])
                     ->query(function (Builder $query, array $data): Builder {
                         $value = $data['value'] ?? null;
-
-                        if (! $value) {
-                            return $query;
-                        }
-
-                        if ($value === 'generico') {
-                            return $query->where(function (Builder $q) {
-                                $q->where('report->_source', 'generico')
-                                    ->orWhere('report->_source', 'generic');
-                            });
-                        }
-
-                        return $query->where('report->_source', $value);
+                        return $value ? $query->where('source', $value) : $query;
                     }),
             ])
             ->paginated([10, 25, 50])
@@ -195,21 +141,17 @@ class MeusRelatorios extends Page implements HasTable
 
     protected function getTableQuery(): Builder
     {
-        return AnaliseRun::query()
+        return AnaliseInvestigation::query()
             ->with('user')
             ->where('user_id', auth()->id())
             ->select([
-                'analise_runs.id',
-                'analise_runs.user_id',
-                'analise_runs.target',
-                'analise_runs.report', // ✅ precisa para pegar account_identifier / first_name do _parsed
-                'analise_runs.status',
-                'analise_runs.progress',
-                'analise_runs.total_unique_ips',
-                'analise_runs.processed_unique_ips',
-                'analise_runs.created_at',
+                'analise_investigations.id',
+                'analise_investigations.user_id',
+                'analise_investigations.name',
+                'analise_investigations.source',
+                'analise_investigations.created_at',
             ])
-            ->selectRaw("LOWER(JSON_UNQUOTE(JSON_EXTRACT(analise_runs.report, '$._source'))) as source_extracted");
+            ->withAvg('runs', 'progress');
     }
 
     /**
@@ -274,37 +216,98 @@ class MeusRelatorios extends Page implements HasTable
         };
     }
 
-    public function resolveViewUrl(AnaliseRun $run): string
+    public function resolveViewUrl(AnaliseInvestigation $investigation): string
     {
-        return match ($this->resolveSource($run)) {
-            'instagram' => AnaliseInteligenteInsta::getUrl(['run' => $run->id]),
-            'google' => AnaliseInteligenteGoogle::getUrl(['run' => $run->id]),
-            'apple' => AnaliseInteligenteApple::getUrl(['run' => $run->id]),
-            'generico' => AnaliseInteligenteGenerico::getUrl(['run' => $run->id]),
-            default => AnaliseInteligenteWPP::getUrl(['run' => $run->id]),
+        $run = $investigation->runs()->orderBy('id')->first();
+
+        return match ($investigation->source) {
+            'instagram' => $run
+                ? AnaliseInteligenteInsta::getUrl(['run' => $run->id])
+                : AnaliseInteligenteInsta::getUrl(),
+            'google' => $run
+                ? AnaliseInteligenteGoogle::getUrl(['run' => $run->id])
+                : AnaliseInteligenteGoogle::getUrl(),
+            'apple' => $run
+                ? AnaliseInteligenteApple::getUrl(['run' => $run->id])
+                : AnaliseInteligenteApple::getUrl(),
+            'generico' => $run
+                ? AnaliseInteligenteGenerico::getUrl(['run' => $run->id])
+                : AnaliseInteligenteGenerico::getUrl(),
+            default => AnaliseInteligenteWPP::getUrl(['investigation' => $investigation->id]),
         };
     }
 
-    #[On('delete-run')]
-    public function deleteRun(int $runId): void
+    protected function ensureInvestigationsForOrphanRuns(): void
     {
-        $run = AnaliseRun::query()
-            ->whereKey($runId)
+        AnaliseRun::query()
+            ->where('user_id', auth()->id())
+            ->whereNull('investigation_id')
+            ->orderBy('id')
+            ->get()
+            ->each(function (AnaliseRun $run): void {
+                $source = $this->resolveSourceFromReport($run);
+
+                $investigation = AnaliseInvestigation::create([
+                    'user_id' => $run->user_id,
+                    'uuid' => (string) \Illuminate\Support\Str::uuid(),
+                    'name' => $this->resolveInvestigationName($run, $source),
+                    'source' => $source,
+                    'created_at' => $run->created_at,
+                    'updated_at' => $run->updated_at,
+                ]);
+
+                $run->investigation_id = $investigation->id;
+                $run->save();
+            });
+    }
+
+    protected function resolveSourceFromReport(AnaliseRun $run): string
+    {
+        $source = strtolower(trim((string) data_get($run->report, '_source')));
+
+        return match ($source) {
+            'instagram' => 'instagram',
+            'google' => 'google',
+            'apple' => 'apple',
+            'generico', 'generic' => 'generico',
+            default => 'whatsapp',
+        };
+    }
+
+    protected function resolveInvestigationName(AnaliseRun $run, string $source): string
+    {
+        if ($source === 'instagram') {
+            return 'Instagram ' . $this->resolveInstagramAlvo($run);
+        }
+
+        $target = trim((string) ($run->target ?: data_get($run->report, '_parsed.target') ?: data_get($run->report, '_parsed.account_identifier')));
+
+        return $target !== ''
+            ? ucfirst($source) . ' ' . $target
+            : ucfirst($source) . ' #' . $run->id;
+    }
+
+    #[On('delete-investigation')]
+    public function deleteInvestigation(int $investigationId): void
+    {
+        $investigation = AnaliseInvestigation::query()
+            ->whereKey($investigationId)
             ->where('user_id', auth()->id())
             ->first();
 
-        if (! $run) {
+        if (! $investigation) {
             Notification::make()
-                ->title('Relatório não encontrado ou você não tem permissão.')
+                ->title('Investigação não encontrada ou você não tem permissão.')
                 ->danger()
                 ->send();
             return;
         }
 
-        $run->delete();
+        AnaliseRun::where('investigation_id', $investigation->id)->delete();
+        $investigation->delete();
 
         Notification::make()
-            ->title('Relatório excluído')
+            ->title('Investigação excluída')
             ->success()
             ->send();
     }

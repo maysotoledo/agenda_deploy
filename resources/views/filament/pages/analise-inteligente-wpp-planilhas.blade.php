@@ -1,11 +1,23 @@
 <x-filament-panels::page>
     <form wire:submit="gerar" class="space-y-6" wire:loading.class="opacity-75" wire:target="gerar">
+        @if ($investigationId)
+            <x-filament::section heading="Investigação">
+                <div class="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                        <div class="text-xs text-gray-500">Enviando arquivos para</div>
+                        <div class="font-semibold">{{ $investigation['name'] ?? ('Investigação #' . $investigationId) }}</div>
+                    </div>
+                    <div class="text-sm text-gray-500">ID {{ $investigationId }}</div>
+                </div>
+            </x-filament::section>
+        @endif
+
         {{ $this->form }}
 
         <div class="flex flex-wrap gap-3">
             <x-filament::button type="submit" wire:loading.attr="disabled" wire:target="gerar" :disabled="$running">
                 <span wire:loading.remove wire:target="gerar">
-                    {{ $running ? 'Processando...' : 'Gerar relatório' }}
+                    {{ $running ? 'Processando...' : ($investigationId ? 'Enviar arquivos' : 'Criar investigação') }}
                 </span>
                 <span wire:loading wire:target="gerar">Gerando...</span>
             </x-filament::button>
@@ -19,7 +31,7 @@
     @if ($runId)
         <x-filament::section class="mt-6" heading="Progresso">
             <div class="space-y-3"
-                @if($running && empty($selectedContactType) && empty($selectedProvider))
+                @if($running && empty($selectedContactType) && empty($selectedProvider) && empty($vinculoModalIp))
                     wire:poll.1000ms="poll"
                 @endif
             >
@@ -34,6 +46,50 @@
                 <div class="text-sm">
                     {{ $progress }}% @if($running) (processando...) @else (finalizado) @endif
                 </div>
+            </div>
+        </x-filament::section>
+    @endif
+
+    @if (! empty($targetRuns))
+        <x-filament::section class="mt-6" heading="Alvos identificados">
+            <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                @foreach($targetRuns as $targetRun)
+                    @php
+                        $isSelected = (int) ($selectedTargetRunId ?? $runId) === (int) ($targetRun['id'] ?? 0);
+                    @endphp
+
+                    <button
+                        type="button"
+                        wire:click="selectTargetReport({{ (int) ($targetRun['id'] ?? 0) }})"
+                        class="rounded-xl border p-4 text-left transition hover:bg-gray-50 {{ $isSelected ? 'border-primary-500 bg-primary-50/50' : '' }}"
+                    >
+                        <div class="flex items-start justify-between gap-3">
+                            <div class="min-w-0">
+                                <div class="text-xs text-gray-500">Alvo</div>
+                                <div class="font-semibold break-all">{{ $targetRun['target'] ?? 'Alvo não identificado' }}</div>
+                            </div>
+
+                            <span class="rounded-full bg-gray-100 px-2 py-1 text-xs font-medium text-gray-700">
+                                {{ (int) ($targetRun['progress'] ?? 0) }}%
+                            </span>
+                        </div>
+
+                        <div class="mt-3 grid grid-cols-2 gap-3 text-sm">
+                            <div>
+                                <div class="text-xs text-gray-500">Run ID</div>
+                                <div class="font-mono">{{ $targetRun['id'] ?? '-' }}</div>
+                            </div>
+                            <div>
+                                <div class="text-xs text-gray-500">IPs únicos</div>
+                                <div class="font-semibold">{{ number_format((int) ($targetRun['total_unique_ips'] ?? 0), 0, ',', '.') }}</div>
+                            </div>
+                        </div>
+
+                        <div class="mt-3 h-2 w-full overflow-hidden rounded bg-gray-200">
+                            <div class="h-2 bg-primary-600" style="width: {{ (int) ($targetRun['progress'] ?? 0) }}%"></div>
+                        </div>
+                    </button>
+                @endforeach
             </div>
         </x-filament::section>
     @endif
@@ -136,6 +192,7 @@
                 'movel' => ['label' => 'Móvel', 'icon' => 'heroicon-o-device-phone-mobile'],
                 'groups' => ['label' => 'Grupos', 'icon' => 'heroicon-o-user-group'],
                 'bilhetagem' => ['label' => 'Mensagens', 'icon' => 'heroicon-o-chat-bubble-left-right'],
+                'vinculo' => ['label' => 'Vínculo', 'icon' => 'heroicon-o-link'],
             ];
 
             $counts = [
@@ -147,6 +204,7 @@
                 'movel' => (int) data_get($report, '_counts.movel', $report['mobile_total_events'] ?? 0),
                 'groups' => (int) data_get($report, '_counts.groups', count($report['groups_rows'] ?? [])),
                 'bilhetagem' => (int) data_get($report, '_counts.bilhetagem', count($report['bilhetagem_cards'] ?? [])),
+                'vinculo' => (int) data_get($report, '_counts.vinculo', count($report['vinculo_rows'] ?? [])),
             ];
         @endphp
 
@@ -256,6 +314,14 @@
 
                     @include('filament.pages.partials.sheet-bilhetagem', [
                         'cards' => $report['bilhetagem_cards'] ?? [],
+                    ])
+                </x-filament::section>
+            @endif
+
+            @if ($tab === 'vinculo')
+                <x-filament::section heading="Vínculo por IP entre alvos">
+                    @include('filament.pages.partials.sheet-vinculo', [
+                        'rows' => $report['vinculo_rows'] ?? [],
                     ])
                 </x-filament::section>
             @endif

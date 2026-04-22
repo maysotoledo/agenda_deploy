@@ -16,6 +16,8 @@ class RunStepper
      */
     public function step(AnaliseRun $run, int $chunkSize = 5, float $sleepSeconds = 0.0): void
     {
+        $deadline = microtime(true) + 12.0;
+
         // evita rodar em run finalizado
         if (($run->status ?? null) !== 'running') {
             return;
@@ -34,7 +36,7 @@ class RunStepper
                 // compatível com boolean e/ou null
                 $q->where('enriched', false)->orWhereNull('enriched');
             })
-            ->limit(max(1, $chunkSize))
+            ->limit(max(1, min($chunkSize, 3)))
             ->get();
 
         // se não tem mais pendente => finaliza
@@ -46,6 +48,10 @@ class RunStepper
         $processedNow = 0;
 
         foreach ($ips as $row) {
+            if (microtime(true) >= $deadline) {
+                break;
+            }
+
             try {
                 $this->processIpRow($row);
             } catch (\Throwable $e) {
@@ -131,9 +137,11 @@ class RunStepper
         // Exemplo usando ip-api.com (se você usa outro provedor, troque aqui)
         // Importante: timeout curto + tratamento de erro
         try {
-            $resp = Http::timeout(5)->retry(2, 150)->get('http://ip-api.com/json/' . $ip, [
-                'fields' => 'status,message,city,isp,org,mobile',
-            ]);
+            $resp = Http::connectTimeout(1)
+                ->timeout(2)
+                ->get('http://ip-api.com/json/' . $ip, [
+                    'fields' => 'status,message,city,isp,org,mobile',
+                ]);
 
             if (! $resp->successful()) {
                 return [];

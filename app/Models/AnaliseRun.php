@@ -12,6 +12,7 @@ class AnaliseRun extends Model
     use Auditable;
     protected $fillable = [
         'user_id', // ✅ novo
+        'investigation_id',
         'uuid',
         'target',
         'total_unique_ips',
@@ -34,5 +35,10 @@ class AnaliseRun extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function investigation(): BelongsTo
+    {
+        return $this->belongsTo(AnaliseInvestigation::class, 'investigation_id');
     }
 }
