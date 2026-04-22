@@ -58,7 +58,9 @@ class AccessLogResource extends Resource
     public static function table(Table $table): Table
     {
         return $table
-            ->modifyQueryUsing(fn (Builder $query) => $query->with('user'))
+            ->modifyQueryUsing(fn (Builder $query) => $query
+                ->with('user')
+                ->whereIn('event', ['login_success', 'login_failed']))
             ->defaultSort('occurred_at', 'desc')
             ->columns([
                 TextColumn::make('user.name')
@@ -82,13 +84,11 @@ class AccessLogResource extends Resource
                     ->formatStateUsing(fn (?string $state) => match ($state) {
                         'login_success' => 'Login OK',
                         'login_failed' => 'Login Falhou',
-                        'logout' => 'Logout',
                         default => $state ?? '—',
                     })
                     ->color(fn (?string $state) => match ($state) {
                         'login_success' => 'success',
                         'login_failed' => 'danger',
-                        'logout' => 'gray',
                         default => 'gray',
                     })
                     ->sortable(),
@@ -116,7 +116,6 @@ class AccessLogResource extends Resource
                     ->options([
                         'login_success' => 'Login OK',
                         'login_failed' => 'Login Falhou',
-                        'logout' => 'Logout',
                     ]),
 
                 SelectFilter::make('user_id')

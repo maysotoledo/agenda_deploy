@@ -33,7 +33,7 @@ class MeusRelatorios extends Page implements HasTable
 
     public static function getNavigationSort(): ?int
     {
-        return 5;
+        return 90;
     }
 
     public function table(Table $table): Table
@@ -135,15 +135,15 @@ class MeusRelatorios extends Page implements HasTable
                     ->suffix('%')
                     ->sortable(),
 
-                Tables\Columns\TextColumn::make('total_unique_ips')
-                    ->label('IPs únicos')
-                    ->numeric()
-                    ->sortable(),
+                // Tables\Columns\TextColumn::make('total_unique_ips')
+                //     ->label('IPs únicos')
+                //     ->numeric()
+                //     ->sortable(),
 
-                Tables\Columns\TextColumn::make('processed_unique_ips')
-                    ->label('IPs processados')
-                    ->numeric()
-                    ->sortable(),
+                // Tables\Columns\TextColumn::make('processed_unique_ips')
+                //     ->label('IPs processados')
+                //     ->numeric()
+                //     ->sortable(),
 
                 Tables\Columns\TextColumn::make('created_at')
                     ->label('Criado em')
@@ -168,6 +168,8 @@ class MeusRelatorios extends Page implements HasTable
                     ->options([
                         'whatsapp' => 'WhatsApp',
                         'instagram' => 'Instagram',
+                        'google' => 'Google',
+                        'apple' => 'Apple',
                         'generico' => 'Genérico',
                     ])
                     ->query(function (Builder $query, array $data): Builder {
@@ -252,7 +254,7 @@ class MeusRelatorios extends Page implements HasTable
                 return 'generico';
             }
 
-            if (in_array($source, ['whatsapp', 'instagram', 'generico'], true)) {
+            if (in_array($source, ['whatsapp', 'instagram', 'google', 'apple', 'generico'], true)) {
                 return $source;
             }
         }
@@ -264,6 +266,8 @@ class MeusRelatorios extends Page implements HasTable
     {
         return match ($this->resolveSource($run)) {
             'instagram' => 'Instagram',
+            'google' => 'Google',
+            'apple' => 'Apple',
             'whatsapp' => 'WhatsApp',
             'generico' => 'Genérico',
             default => 'Genérico',
@@ -274,6 +278,8 @@ class MeusRelatorios extends Page implements HasTable
     {
         return match ($this->resolveSource($run)) {
             'instagram' => AnaliseInteligenteInsta::getUrl(['run' => $run->id]),
+            'google' => AnaliseInteligenteGoogle::getUrl(['run' => $run->id]),
+            'apple' => AnaliseInteligenteApple::getUrl(['run' => $run->id]),
             'generico' => AnaliseInteligenteGenerico::getUrl(['run' => $run->id]),
             default => AnaliseInteligenteWPP::getUrl(['run' => $run->id]),
         };

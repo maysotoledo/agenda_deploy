@@ -46,7 +46,7 @@ class AnaliseInteligenteGenerico extends Page implements HasSchemas
 
     public static function getNavigationSort(): ?int
     {
-        return 1;
+        return 50;
     }
 
     public function mount(): void

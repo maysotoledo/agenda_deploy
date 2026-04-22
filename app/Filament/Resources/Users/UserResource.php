@@ -11,7 +11,6 @@ use App\Models\User;
 use BackedEnum;
 use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
-use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Table;
 use UnitEnum;
 
@@ -20,7 +19,7 @@ class UserResource extends Resource
 {
     protected static ?string $model = User::class;
 
-    protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedRectangleStack;
+    protected static string|BackedEnum|null $navigationIcon = 'heroicon-o-user-group';
 
     public static function getNavigationGroup(): string|UnitEnum|null
     {
@@ -40,11 +39,6 @@ class UserResource extends Resource
     public static function getPluralModelLabel(): string
     {
         return 'Usuários';
-    }
-
-    public static function getNavigationIcon(): string|BackedEnum|null
-    {
-        return 'heroicon-o-user';
     }
 
     public static function form(Schema $schema): Schema

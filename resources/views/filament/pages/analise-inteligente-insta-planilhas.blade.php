@@ -105,6 +105,30 @@
                         UTC convertido para: GMT-3 (Brasilia)
                     </div>
                 </div>
+
+                <button
+                    type="button"
+                    class="rounded-xl border p-4 text-left hover:bg-gray-50 transition"
+                    wire:click="openRelationshipModal('followers')"
+                >
+                    <div class="text-sm text-gray-500">Seguidores extraídos do log</div>
+                    <div class="mt-1 text-2xl font-semibold">
+                        {{ number_format($report['followers_count'] ?? count($report['followers'] ?? []), 0, ',', '.') }}
+                    </div>
+                    <div class="text-xs text-gray-400 mt-1">Clique para ver os nomes</div>
+                </button>
+
+                <button
+                    type="button"
+                    class="rounded-xl border p-4 text-left hover:bg-gray-50 transition"
+                    wire:click="openRelationshipModal('following')"
+                >
+                    <div class="text-sm text-gray-500">Seguindo extraídos do log</div>
+                    <div class="mt-1 text-2xl font-semibold">
+                        {{ number_format($report['following_count'] ?? count($report['following'] ?? []), 0, ',', '.') }}
+                    </div>
+                    <div class="text-xs text-gray-400 mt-1">Clique para ver os nomes</div>
+                </button>
             </div>
 
             <div class="grid gap-4 md:grid-cols-2 mt-4">

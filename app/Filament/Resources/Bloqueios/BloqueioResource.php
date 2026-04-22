@@ -48,6 +48,11 @@ class BloqueioResource extends Resource
         return 'Agenda';
     }
 
+    public static function getNavigationSort(): ?int
+    {
+        return 3;
+    }
+
     public static function form(Schema $schema): Schema
     {
         return $schema->components([

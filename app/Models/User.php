@@ -19,11 +19,17 @@ class User extends Authenticatable
         'name',
         'email',
         'password',
+        'google_calendar_token',
+        'google_calendar_refresh_token',
+        'google_calendar_token_expires_at',
+        'google_calendar_id',
     ];
 
     protected $hidden = [
         'password',
         'remember_token',
+        'google_calendar_token',
+        'google_calendar_refresh_token',
     ];
 
     protected function casts(): array
@@ -31,6 +37,9 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'google_calendar_token' => 'encrypted',
+            'google_calendar_refresh_token' => 'encrypted',
+            'google_calendar_token_expires_at' => 'datetime',
         ];
     }
 

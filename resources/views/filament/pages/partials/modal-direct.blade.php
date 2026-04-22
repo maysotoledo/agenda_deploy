@@ -3,29 +3,43 @@
 @php
     $targetName = trim((string) ($target ?? ''));
     $otherName = trim((string) ($participant ?? ''));
+    $displayName = $otherName !== '' ? $otherName : 'Direct';
 
     $isTarget = function (?string $author) use ($targetName): bool {
         $author = trim((string) $author);
         if ($author === '' || $targetName === '') return false;
         return strcasecmp($author, $targetName) === 0;
     };
+
+    $messages = array_values((array) ($messages ?? []));
 @endphp
 
-<div class="space-y-3">
-    {{-- header simples --}}
-    <div class="border-b pb-2">
-        <div class="font-semibold text-gray-900">
-            {{ $otherName !== '' ? $otherName : 'Direct' }}
-        </div>
-        <div class="text-xs text-gray-500">
-            {{ $targetName !== '' ? "Alvo: {$targetName}" : '' }}
+<div class="overflow-hidden rounded-2xl border border-gray-200 bg-slate-50">
+    <div class="border-b border-gray-200 bg-white px-5 py-4">
+        <div class="min-w-0">
+            <div class="text-xs font-semibold uppercase tracking-wide text-gray-400">
+                Análise de Direct
+            </div>
+
+            <div class="mt-1 truncate text-lg font-semibold text-gray-950">
+                {{ $displayName }}
+            </div>
+
+            <div class="mt-1 text-sm text-gray-500">
+                {{ $targetName !== '' ? "Alvo: {$targetName}" : 'Log Instagram' }}
+            </div>
         </div>
     </div>
 
-    @if (empty($messages))
-        <div class="text-sm text-gray-500">Sem mensagens encontradas.</div>
+    @if (count($messages) === 0)
+        <div class="flex min-h-56 items-center justify-center px-4 py-10 text-sm text-gray-500">
+            Sem mensagens encontradas.
+        </div>
     @else
-        <div class="max-h-[65vh] overflow-y-auto pr-1 space-y-2 bg-gray-50 rounded-xl p-3 border">
+        <div class="max-h-[68vh] overflow-y-auto px-4 py-5">
+            <div class="relative mx-auto max-w-5xl">
+                <div class="absolute bottom-0 left-1/2 top-0 hidden w-px -translate-x-1/2 bg-gray-200 md:block"></div>
+
             @foreach ($messages as $m)
                 @php
                     $author = trim((string) ($m['author'] ?? ''));
@@ -33,41 +47,51 @@
                     $body = (string) ($m['body'] ?? '—');
 
                     $fromTarget = $isTarget($author);
-
-                    $rowAlign = $fromTarget ? 'justify-end' : 'justify-start';
-
-                    // bolha
-                    $bubbleClass = $fromTarget
-                        ? 'bg-primary-600 text-white'
-                        : 'bg-gray-200 text-gray-900';
-
-                    // data dentro (cor mais suave)
-                    $dtClass = $fromTarget
-                        ? 'text-white/80'
-                        : 'text-gray-500';
-
-                    // “corte” no canto igual chat
-                    $shape = $fromTarget
-                        ? 'rounded-2xl rounded-br-md'
-                        : 'rounded-2xl rounded-bl-md';
+                    $label = $fromTarget ? 'Alvo' : 'Interlocutor';
+                    $authorDisplay = $author !== '' && $author !== '—' ? $author : ($fromTarget ? $targetName : $displayName);
                 @endphp
 
-                <div class="flex {{ $rowAlign }}">
-                    <div class="max-w-[78%]">
-                        <div class="px-3 py-2 {{ $bubbleClass }} {{ $shape }}">
-                            {{-- texto --}}
-                            <div class="text-sm leading-relaxed whitespace-pre-wrap break-words">
-                                {{ $body }}
-                            </div>
+                    <div class="relative mb-4 grid gap-3 md:grid-cols-2">
+                        <div class="{{ $fromTarget ? 'hidden md:block' : '' }}">
+                            @if(! $fromTarget)
+                                <div class="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+                                    <div class="mb-2 flex flex-wrap items-center gap-2">
+                                        <span class="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-700">
+                                            {{ $label }}
+                                        </span>
+                                        <span class="text-xs text-gray-500">{{ $authorDisplay }}</span>
+                                        <span class="ml-auto text-xs font-medium text-gray-400">{{ $dt }}</span>
+                                    </div>
 
-                            {{-- data no canto, dentro da bolha --}}
-                            <div class="mt-1 text-[11px] {{ $dtClass }} flex justify-end">
-                                {{ $dt }}
-                            </div>
+                                    <div class="whitespace-pre-wrap break-words text-sm leading-6 text-gray-900">
+                                        {{ $body }}
+                                    </div>
+                                </div>
+                            @endif
+                        </div>
+
+                        <div class="absolute left-1/2 top-5 z-10 hidden h-3 w-3 -translate-x-1/2 rounded-full border-2 border-white {{ $fromTarget ? 'bg-blue-500' : 'bg-gray-400' }} md:block"></div>
+
+                        <div class="{{ $fromTarget ? '' : 'hidden md:block' }}">
+                            @if($fromTarget)
+                                <div class="rounded-2xl border border-blue-200 bg-blue-50 p-4 shadow-sm">
+                                    <div class="mb-2 flex flex-wrap items-center gap-2">
+                                        <span class="rounded-full bg-blue-600 px-2.5 py-1 text-xs font-semibold text-white">
+                                            {{ $label }}
+                                        </span>
+                                        <span class="text-xs text-blue-700">{{ $authorDisplay }}</span>
+                                        <span class="ml-auto text-xs font-medium text-blue-500">{{ $dt }}</span>
+                                    </div>
+
+                                    <div class="whitespace-pre-wrap break-words text-sm leading-6 text-gray-950">
+                                        {{ $body }}
+                                    </div>
+                                </div>
+                            @endif
                         </div>
                     </div>
-                </div>
             @endforeach
+            </div>
         </div>
     @endif
 </div>

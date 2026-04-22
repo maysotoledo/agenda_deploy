@@ -5,7 +5,6 @@ namespace App\Listeners;
 use App\Models\AccessLog;
 use Illuminate\Auth\Events\Failed;
 use Illuminate\Auth\Events\Login;
-use Illuminate\Auth\Events\Logout;
 use Illuminate\Http\Request;
 
 class LogAccessEvents
@@ -22,19 +21,6 @@ class LogAccessEvents
                 'user_id' => $event->user?->id,
                 'email' => $event->user?->email,
                 'event' => 'login_success',
-                'ip' => $ip,
-                'user_agent' => $ua,
-                'occurred_at' => now(),
-                'meta' => ['guard' => $event->guard],
-            ]);
-            return;
-        }
-
-        if ($event instanceof Logout) {
-            AccessLog::create([
-                'user_id' => $event->user?->id,
-                'email' => $event->user?->email,
-                'event' => 'logout',
                 'ip' => $ip,
                 'user_agent' => $ua,
                 'occurred_at' => now(),

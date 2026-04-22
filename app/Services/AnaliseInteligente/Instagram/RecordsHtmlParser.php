@@ -28,7 +28,7 @@ class RecordsHtmlParser
 
         $target = $target ?? $accountIdentifier;
 
-        $registrationIpRaw = $this->getSimpleValueByLabel($xp, 'Registration Ip');
+        $registrationIpRaw = $this->extractRegistrationIpRaw($dom, $xp);
         $registrationParsed = $this->parseIpAndPort($registrationIpRaw);
         $registrationIp = $registrationParsed['ip'];
 
@@ -39,6 +39,8 @@ class RecordsHtmlParser
         $ipEvents = $this->extractIpEvents($xp);
 
         $directThreads = $this->extractUnifiedMessagesThreadsDom($xp, $vanityName, $accountIdentifier);
+        $followers = $this->extractRelationshipNames($xp, 'followers');
+        $following = $this->extractRelationshipNames($xp, 'following');
 
         [$rangeStartUtc, $rangeEndUtc] = $this->parseDateRangeUtc($dateRange);
 
@@ -70,6 +72,8 @@ class RecordsHtmlParser
             'ip_events' => $ipEvents,
 
             'direct_threads' => $directThreads,
+            'followers' => $followers,
+            'following' => $following,
         ];
     }
 
@@ -124,6 +128,49 @@ class RecordsHtmlParser
         }
 
         return ['phone' => $phone, 'verified_on' => $verifiedOn];
+    }
+
+    private function extractRegistrationIpRaw(DOMDocument $dom, DOMXPath $xp): ?string
+    {
+        $value = $this->getSimpleValueByLabel($xp, 'Registration Ip')
+            ?? $this->getSimpleValueByLabel($xp, 'Registration IP');
+
+        if ($value) {
+            return $value;
+        }
+
+        $sectionHtml = $this->extractPropertySectionHtml($dom, 'property-registration_ip');
+        if ($sectionHtml === '') {
+            return null;
+        }
+
+        $sectionHtml = preg_replace('/<div[^>]*class="[^"]*pageBreak[^"]*"[^>]*>.*?<\/div>/is', ' ', $sectionHtml) ?? $sectionHtml;
+        $text = html_entity_decode(strip_tags($sectionHtml), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $text = preg_replace('/\s+/', ' ', trim($text)) ?? '';
+
+        return $this->extractFirstIpLikeValue($text);
+    }
+
+    private function extractFirstIpLikeValue(string $text): ?string
+    {
+        $definitionEnd = stripos($text, 'Registration Ip');
+        if ($definitionEnd !== false) {
+            $text = substr($text, $definitionEnd + strlen('Registration Ip'));
+        }
+
+        if (preg_match('/\[([0-9a-f:]+)\](?::\d{1,5})?/i', $text, $m)) {
+            return $m[0];
+        }
+
+        if (preg_match('/\b(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?::\d{1,5})?\b/', $text, $m)) {
+            return $m[0];
+        }
+
+        if (preg_match('/\b[0-9a-f:]{2,}\b/i', $text, $m) && str_contains($m[0], ':') && filter_var($m[0], FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
+            return $m[0];
+        }
+
+        return null;
     }
 
     private function extractLastLocation(DOMDocument $dom): array
@@ -292,6 +339,224 @@ class RecordsHtmlParser
         [$a, $b] = explode(' to ', $range, 2);
 
         return [$this->parseUtc($a), $this->parseUtc($b)];
+    }
+
+    private function extractRelationshipNames(DOMXPath $xp, string $type): array
+    {
+        $sections = $this->findRelationshipSections($xp, $type);
+        $names = [];
+
+        foreach ($sections as $section) {
+            if (! ($section instanceof DOMElement)) {
+                continue;
+            }
+
+            $labelNodes = $xp->query(".//div[contains(@class,'t') and contains(@class,'i')]", $section);
+
+            foreach ($labelNodes ?: [] as $labelNode) {
+                if (! ($labelNode instanceof DOMElement)) {
+                    continue;
+                }
+
+                $label = mb_strtolower($this->readLabel($labelNode));
+                $value = $this->readValue($xp, $labelNode);
+
+                if ($value === '') {
+                    continue;
+                }
+
+                if ($this->isRelationshipNameLabel($label, $type) || preg_match('/\(Instagram:\s*\d+\)/i', $value)) {
+                    foreach ($this->extractNamesFromRelationshipValue($value) as $name) {
+                        $names[$this->normalizeRelationshipNameKey($name)] = $name;
+                    }
+                }
+            }
+
+            if (! $labelNodes || $labelNodes->length === 0) {
+                foreach ($this->extractInstagramNamesFromText($section->textContent ?? '') as $name) {
+                    $names[$this->normalizeRelationshipNameKey($name)] = $name;
+                }
+            }
+        }
+
+        $out = array_values(array_filter($names, fn ($name) => trim((string) $name) !== ''));
+        natcasesort($out);
+
+        return array_values($out);
+    }
+
+    private function findRelationshipSections(DOMXPath $xp, string $type): array
+    {
+        $needleIds = $type === 'followers'
+            ? ['follower', 'followers']
+            : ['following', 'followings', 'followed', 'follows'];
+
+        $sections = [];
+
+        foreach ($needleIds as $needle) {
+            $nodes = $xp->query(
+                "//div[starts-with(@id,'property-') and contains(translate(@id,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'{$needle}')]"
+            );
+
+            foreach ($nodes ?: [] as $node) {
+                if ($node instanceof DOMElement) {
+                    $sections[spl_object_id($node)] = $node;
+                }
+            }
+        }
+
+        $labelNeedles = $type === 'followers'
+            ? ['Followers', 'Follower', 'Seguidores', 'Seguidor']
+            : ['Following', 'Followings', 'Followed', 'Seguindo'];
+
+        foreach ($labelNeedles as $label) {
+            $nodes = $xp->query("//div[contains(@class,'t') and contains(@class,'i')][normalize-space(text())='{$label}']");
+
+            foreach ($nodes ?: [] as $node) {
+                if ($node instanceof DOMElement) {
+                    $section = $this->nearestPropertySection($node);
+                    if ($section instanceof DOMElement) {
+                        $sections[spl_object_id($section)] = $section;
+                    }
+                }
+            }
+        }
+
+        return array_values($sections);
+    }
+
+    private function nearestPropertySection(DOMElement $node): ?DOMElement
+    {
+        $current = $node;
+
+        while ($current instanceof DOMElement) {
+            $id = $current->getAttribute('id');
+
+            if ($id !== '' && str_starts_with($id, 'property-')) {
+                return $current;
+            }
+
+            $current = $current->parentNode instanceof DOMElement ? $current->parentNode : null;
+        }
+
+        return null;
+    }
+
+    private function isRelationshipNameLabel(string $label, string $type): bool
+    {
+        $labels = [
+            'name',
+            'full name',
+            'username',
+            'user name',
+            'screen name',
+            'instagram username',
+            'vanity name',
+            'profile',
+            'account',
+            'conta',
+            'nome',
+            'usuario',
+            'usuário',
+        ];
+
+        if ($type === 'followers') {
+            $labels[] = 'follower';
+            $labels[] = 'followers';
+            $labels[] = 'seguidor';
+            $labels[] = 'seguidores';
+        } else {
+            $labels[] = 'following';
+            $labels[] = 'followings';
+            $labels[] = 'followed';
+            $labels[] = 'seguindo';
+        }
+
+        return in_array($label, $labels, true);
+    }
+
+    private function extractNamesFromRelationshipValue(string $value): array
+    {
+        $names = $this->extractInstagramNamesFromText($value);
+
+        if (count($names) > 0) {
+            return $names;
+        }
+
+        $lines = preg_split("/\r\n|\r|\n/u", $value) ?: [$value];
+        $out = [];
+
+        foreach ($lines as $line) {
+            $line = $this->cleanRelationshipName($line);
+
+            if ($this->looksLikeRelationshipName($line)) {
+                $out[] = $line;
+            }
+        }
+
+        return $out;
+    }
+
+    private function extractInstagramNamesFromText(string $text): array
+    {
+        preg_match_all('/([^\r\n]+?)\s*\(Instagram:\s*\d+\)\s*/iu', $text, $matches);
+        $rawNames = $matches[1] ?? [];
+        $names = [];
+
+        foreach ($rawNames as $rawName) {
+            $name = $this->cleanRelationshipName($rawName);
+
+            if ($this->looksLikeRelationshipName($name)) {
+                $names[] = $name;
+            }
+        }
+
+        return $names;
+    }
+
+    private function looksLikeRelationshipName(string $value): bool
+    {
+        if ($value === '' || mb_strlen($value) > 120) {
+            return false;
+        }
+
+        if (preg_match('/^\d+$/', $value)) {
+            return false;
+        }
+
+        if (preg_match('/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\s+UTC)?$/', $value)) {
+            return false;
+        }
+
+        if (filter_var($value, FILTER_VALIDATE_URL)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    private function normalizeRelationshipNameKey(string $name): string
+    {
+        return mb_strtolower(trim(preg_replace('/\s+/u', ' ', $name) ?? $name));
+    }
+
+    private function cleanRelationshipName(string $name): string
+    {
+        $name = trim(preg_replace('/\s+/u', ' ', $name) ?? '');
+        $name = preg_replace('/\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\s+UTC)?/u', ' ', $name) ?? $name;
+        $name = preg_replace('/\b(?:followed on|follow time|timestamp|created at|updated at|time|date|data)\b/iu', ' ', $name) ?? $name;
+        $name = trim(preg_replace('/\s+/u', ' ', $name) ?? $name);
+
+        do {
+            $previous = $name;
+            $name = trim(preg_replace(
+                '/^(followers?|followings?|following|followed|seguidores?|seguindo|name|full name|username|user name|profile|account|nome|conta|usu[aá]rio)\s+/iu',
+                '',
+                $name
+            ) ?? $name);
+        } while ($name !== $previous);
+
+        return $name;
     }
 
     // =========================================================

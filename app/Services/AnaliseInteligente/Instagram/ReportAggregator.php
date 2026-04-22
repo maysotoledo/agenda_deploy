@@ -224,6 +224,8 @@ class ReportAggregator
 
         // ✅ DIRECT
         $directThreads = $this->buildDirectThreads($parsed, $tz);
+        $followers = $this->normalizeNameList($parsed['followers'] ?? []);
+        $following = $this->normalizeNameList($parsed['following'] ?? []);
 
         return [
             'generated_at' => $this->formatDate($parsed['generated_at'] ?? null, $tz),
@@ -263,7 +265,30 @@ class ReportAggregator
 
             // ✅ NOVO
             'direct_threads' => $directThreads,
+            'followers' => $followers,
+            'following' => $following,
+            'followers_count' => count($followers),
+            'following_count' => count($following),
         ];
+    }
+
+    private function normalizeNameList(mixed $names): array
+    {
+        $out = [];
+
+        foreach ((array) $names as $name) {
+            $name = trim(preg_replace('/\s+/u', ' ', (string) $name) ?? '');
+
+            if ($name === '') {
+                continue;
+            }
+
+            $out[mb_strtolower($name)] = $name;
+        }
+
+        natcasesort($out);
+
+        return array_values($out);
     }
 
     private function buildDirectThreads(array $parsed, string $tz): array

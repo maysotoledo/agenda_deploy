@@ -52,10 +52,9 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
     public ?string $selectedDirectParticipant = null;
     public array $selectedDirectMessages = [];
 
-    public static function getNavigationIcon(): string|\BackedEnum|null
-    {
-        return 'heroicon-o-calendar-days';
-    }
+    // Followers / following modal
+    public ?string $selectedRelationshipType = null;
+    public array $selectedRelationshipNames = [];
 
     public static function getNavigationGroup(): string|\UnitEnum|null
     {
@@ -64,7 +63,7 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
 
     public static function getNavigationSort(): ?int
     {
-        return 3;
+        return 20;
     }
 
     public function mount(): void
@@ -114,6 +113,7 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
         $this->selectedProvider = null;
         $this->selectedProviderIps = [];
         $this->closeDirectModalState();
+        $this->closeRelationshipModalState();
 
         $state = $this->form->getState();
         $storedPaths = $state['html_file'] ?? null;
@@ -262,6 +262,7 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
         $this->selectedProvider = null;
         $this->selectedProviderIps = [];
         $this->closeDirectModalState();
+        $this->closeRelationshipModalState();
 
         $this->form->fill();
     }
@@ -384,6 +385,42 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
     {
         $this->selectedDirectParticipant = null;
         $this->selectedDirectMessages = [];
+    }
+
+    // ==========================
+    // Seguidores / seguindo modal
+    // ==========================
+    public function openRelationshipModal(string $type): void
+    {
+        if (! in_array($type, ['followers', 'following'], true)) {
+            return;
+        }
+
+        $this->selectedRelationshipType = $type;
+        $this->selectedRelationshipNames = array_values((array) ($this->report[$type] ?? []));
+
+        $this->mountAction('relationshipModal');
+    }
+
+    public function relationshipModal(): Action
+    {
+        return Action::make('relationshipModal')
+            ->label('Contas')
+            ->modalHeading(fn () => $this->selectedRelationshipType === 'followers' ? 'Seguidores' : 'Seguindo')
+            ->modalWidth(Width::Large)
+            ->modalSubmitAction(false)
+            ->modalCancelActionLabel('Fechar')
+            ->after(fn () => $this->closeRelationshipModalState())
+            ->modalContent(fn () => view('filament.pages.partials.modal-relationship-names', [
+                'title' => $this->selectedRelationshipType === 'followers' ? 'Seguidores' : 'Seguindo',
+                'names' => $this->selectedRelationshipNames,
+            ]));
+    }
+
+    protected function closeRelationshipModalState(): void
+    {
+        $this->selectedRelationshipType = null;
+        $this->selectedRelationshipNames = [];
     }
 
     // ==========================

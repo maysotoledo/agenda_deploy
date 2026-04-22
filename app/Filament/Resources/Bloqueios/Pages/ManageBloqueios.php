@@ -73,12 +73,14 @@ class ManageBloqueios extends ManageRecords
                         ->label('Início')
                         ->required()
                         ->native(false)
+                        ->closeOnDateSelection()
                         ->live(),
 
                     DatePicker::make('dia_fim')
                         ->label('Fim')
                         ->required()
                         ->native(false)
+                        ->closeOnDateSelection()
                         ->live(),
                         // ->rules([
                         //     fn () => function (string $attribute, $value, \Closure $fail): void {
@@ -185,12 +187,14 @@ class ManageBloqueios extends ManageRecords
                         ->label('Início')
                         ->required()
                         ->native(false)
+                        ->closeOnDateSelection()
                         ->live(),
 
                     DatePicker::make('dia_fim')
                         ->label('Fim')
                         ->required()
                         ->native(false)
+                        ->closeOnDateSelection()
                         ->live(),
 
                     Placeholder::make('preview_desbloqueio')

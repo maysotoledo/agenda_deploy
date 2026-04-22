@@ -32,6 +32,7 @@ class Evento extends Model
         'created_by',
         'updated_by',
         'deleted_by',
+        'google_calendar_event_id',
     ];
 
     protected $casts = [

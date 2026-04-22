@@ -9,7 +9,7 @@ class TelematicaMeta extends Page
 {
     use HasPageShield;
 
-    protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-building-library';
+    protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-squares-2x2';
     protected static ?string $navigationLabel = 'Meta (Facebook/Instagram)';
 
     protected static string|\UnitEnum|null $navigationGroup = 'Informação Telemática';

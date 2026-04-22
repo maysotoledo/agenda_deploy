@@ -31,7 +31,7 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
     use InteractsWithSchemas;
     use HasPageShield;
 
-    protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-document-text';
+    protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-chat-bubble-left-right';
     protected static ?string $navigationLabel = 'Análise log WHATSAPP';
     protected static ?string $title = 'Análise de log do WHATSAPP';
     protected static ?string $slug = 'analise-inteligente-wpp';
@@ -68,10 +68,6 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
     public int $bilhetagemModalTotal = 0;
     public array $bilhetagemModalRows = [];
 
-    public static function getNavigationIcon(): string|\BackedEnum|null
-    {
-        return 'heroicon-o-calendar-days';
-    }
 
     public static function getNavigationGroup(): string|\UnitEnum|null
     {
@@ -80,7 +76,7 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
 
     public static function getNavigationSort(): ?int
     {
-        return 2;
+        return 10;
     }
 
     public function mount(): void

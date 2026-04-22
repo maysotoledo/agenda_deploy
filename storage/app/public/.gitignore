@@ -2,8 +2,12 @@
 !.gitignore
 !uploads/
 !uploads/generic-logs/
+!uploads/generic-logs/.gitkeep
 !uploads/records-html/
+!uploads/records-html/.gitkeep
 !uploads/records-html-bilhetagem/
+!uploads/records-html-bilhetagem/.gitkeep
 !uploads/records-html-instagram/
+!uploads/records-html-instagram/.gitkeep
 !telematica/
 !telematica/**

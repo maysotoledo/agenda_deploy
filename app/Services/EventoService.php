@@ -7,9 +7,13 @@ use Illuminate\Support\Facades\DB;
 
 class EventoService
 {
+    public function __construct(
+        private readonly GoogleCalendarService $googleCalendar,
+    ) {}
+
     public function criar(array $data): Evento
     {
-        return DB::transaction(function () use ($data) {
+        $evento = DB::transaction(function () use ($data) {
             $userId = auth()->id();
 
             $data['created_by'] = $userId;
@@ -17,11 +21,15 @@ class EventoService
 
             return Evento::create($data);
         });
+
+        $this->googleCalendar->syncEvento($evento->refresh());
+
+        return $evento;
     }
 
     public function editar(Evento $evento, array $data): Evento
     {
-        return DB::transaction(function () use ($evento, $data) {
+        $evento = DB::transaction(function () use ($evento, $data) {
             $userId = auth()->id();
 
             $data['updated_by'] = $userId;
@@ -31,6 +39,10 @@ class EventoService
 
             return $evento->refresh();
         });
+
+        $this->googleCalendar->syncEvento($evento);
+
+        return $evento;
     }
 
     /**
@@ -48,6 +60,8 @@ class EventoService
 
             $evento->delete(); // SoftDeletes => deleted_at
         });
+
+        $this->googleCalendar->deleteEvento($evento);
     }
 
     /**
@@ -55,7 +69,7 @@ class EventoService
      */
     public function restaurar(int $eventoId): Evento
     {
-        return DB::transaction(function () use ($eventoId) {
+        $evento = DB::transaction(function () use ($eventoId) {
             $userId = auth()->id();
 
             $evento = Evento::withTrashed()->findOrFail($eventoId);
@@ -68,5 +82,9 @@ class EventoService
 
             return $evento->refresh();
         });
+
+        $this->googleCalendar->syncEvento($evento);
+
+        return $evento;
     }
 }

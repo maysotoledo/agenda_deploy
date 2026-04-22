@@ -34,9 +34,13 @@ class CalendarWidget extends FullCalendarWidget
 
     public Model|string|null $model = Evento::class;
 
+    protected string $view = 'filament.widgets.calendar-widget';
+
     protected static ?int $sort = 2;
 
     public ?int $agendaUserId = null;
+
+    public ?string $calendarSyncSignature = null;
 
     /**
      * ✅ Controla se o modal atual é "somente mensagem".
@@ -52,12 +56,14 @@ class CalendarWidget extends FullCalendarWidget
         if ($user?->hasRole('epc')) {
             $this->agendaUserId = (int) $user->getKey();
             session(['agenda_user_id' => $this->agendaUserId]);
+            $this->rememberCalendarSyncSignature();
             return;
         }
 
         if (! User::query()->role('epc')->exists()) {
             $this->agendaUserId = null;
             session()->forget('agenda_user_id');
+            $this->calendarSyncSignature = null;
             return;
         }
 
@@ -70,6 +76,7 @@ class CalendarWidget extends FullCalendarWidget
 
         if ($validSessionUserId) {
             $this->agendaUserId = (int) $validSessionUserId;
+            $this->rememberCalendarSyncSignature();
             return;
         }
 
@@ -82,8 +89,10 @@ class CalendarWidget extends FullCalendarWidget
 
         if ($this->agendaUserId) {
             session(['agenda_user_id' => $this->agendaUserId]);
+            $this->rememberCalendarSyncSignature();
         } else {
             session()->forget('agenda_user_id');
+            $this->calendarSyncSignature = null;
         }
     }
 
@@ -102,13 +111,70 @@ class CalendarWidget extends FullCalendarWidget
         $this->agendaUserId = $userId;
         session(['agenda_user_id' => $userId]);
 
+        $this->rememberCalendarSyncSignature();
         $this->forceCalendarRefresh();
     }
 
     public function forceCalendarRefresh(): void
     {
+        $this->rememberCalendarSyncSignature();
         $this->refreshRecords();
         $this->dispatch('$refresh');
+    }
+
+    public function pollCalendarForChanges(): void
+    {
+        if (! $this->agendaUserId) {
+            $this->calendarSyncSignature = null;
+            return;
+        }
+
+        $signature = $this->makeCalendarSyncSignature();
+
+        if ($this->calendarSyncSignature === null) {
+            $this->calendarSyncSignature = $signature;
+            return;
+        }
+
+        if ($signature === $this->calendarSyncSignature) {
+            return;
+        }
+
+        $this->calendarSyncSignature = $signature;
+        $this->refreshRecords();
+    }
+
+    private function rememberCalendarSyncSignature(): void
+    {
+        $this->calendarSyncSignature = $this->agendaUserId
+            ? $this->makeCalendarSyncSignature()
+            : null;
+    }
+
+    private function makeCalendarSyncSignature(): string
+    {
+        if (! $this->agendaUserId) {
+            return 'none';
+        }
+
+        $eventStats = Evento::withTrashed()
+            ->where('user_id', $this->agendaUserId)
+            ->selectRaw('COUNT(*) as total, MAX(updated_at) as last_updated_at, MAX(deleted_at) as last_deleted_at')
+            ->first();
+
+        $blockStats = Bloqueio::query()
+            ->where('user_id', $this->agendaUserId)
+            ->selectRaw('COUNT(*) as total, MAX(updated_at) as last_updated_at')
+            ->first();
+
+        return implode('|', [
+            $this->agendaUserId,
+            (int) ($eventStats?->total ?? 0),
+            (string) ($eventStats?->last_updated_at ?? ''),
+            (string) ($eventStats?->last_deleted_at ?? ''),
+            (int) ($blockStats?->total ?? 0),
+            (string) ($blockStats?->last_updated_at ?? ''),
+        ]);
     }
 
     public static function getHeading(): string
