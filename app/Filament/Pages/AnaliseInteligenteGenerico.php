@@ -14,6 +14,7 @@ use Filament\Pages\Page;
 use Filament\Schemas\Concerns\InteractsWithSchemas;
 use Filament\Schemas\Contracts\HasSchemas;
 use Filament\Schemas\Schema;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use BezhanSalleh\FilamentShield\Traits\HasPageShield;
@@ -216,8 +217,26 @@ class AnaliseInteligenteGenerico extends Page implements HasSchemas
         }
 
         if ($run->status === 'done' && $this->report === null) {
-            $this->hydrateReportFromRun($run);
+            $this->hydrateReportFromRun($run, 'timeline');
             Notification::make()->title('Relatório pronto')->success()->send();
+        }
+    }
+
+    public function setTab(string $tab): void
+    {
+        if (! in_array($tab, $this->availableTabs(), true)) {
+            return;
+        }
+
+        $this->tab = $tab;
+
+        if (! $this->runId || ! $this->report) {
+            return;
+        }
+
+        $run = AnaliseRun::find($this->runId);
+        if ($run && $run->status === 'done') {
+            $this->hydrateReportFromRun($run, $tab);
         }
     }
 
@@ -250,17 +269,33 @@ class AnaliseInteligenteGenerico extends Page implements HasSchemas
         $this->running = ($run->status === 'running');
 
         if ($run->status === 'done') {
-            $this->hydrateReportFromRun($run);
+            $this->tab = 'timeline';
+            $this->hydrateReportFromRun($run, 'timeline');
         }
     }
 
-    protected function hydrateReportFromRun(AnaliseRun $run): void
+    protected function hydrateReportFromRun(AnaliseRun $run, ?string $activeTab = null): void
+    {
+        $report = Cache::remember(
+            $this->reportCacheKey($run),
+            now()->addHour(),
+            fn () => $this->buildReportFromRun($run)
+        );
+
+        if (! is_array($report)) {
+            return;
+        }
+
+        $this->report = $this->filterReportForActiveTab($report, $activeTab ?? $this->tab);
+    }
+
+    protected function buildReportFromRun(AnaliseRun $run): ?array
     {
         $parsed = $run->report['_parsed'] ?? null;
 
         if (! is_array($parsed)) {
             Notification::make()->title('Sem dados para montar relatório')->danger()->send();
-            return;
+            return null;
         }
 
         $ips = AnaliseRunIp::where('analise_run_id', $run->id)->pluck('ip')->all();
@@ -279,7 +314,59 @@ class AnaliseInteligenteGenerico extends Page implements HasSchemas
             ];
         }
 
-        $this->report = (new GenericReportAggregator())->buildReport($parsed, $enrichedByIp);
+        return (new GenericReportAggregator())->buildReport($parsed, $enrichedByIp);
+    }
+
+    protected function filterReportForActiveTab(array $report, string $activeTab): array
+    {
+        $counts = [
+            'timeline' => count($report['timeline_rows'] ?? []),
+            'unique_ips' => count($report['unique_ip_rows'] ?? []),
+            'providers' => count($report['provider_stats_rows'] ?? []),
+            'cities' => count($report['city_stats_rows'] ?? []),
+            'residencial' => (int) ($report['night_total_events'] ?? 0),
+            'movel' => (int) ($report['mobile_total_events'] ?? 0),
+        ];
+
+        $heavyKeys = [
+            'timeline_rows',
+            'unique_ip_rows',
+            'provider_stats_rows',
+            'city_stats_rows',
+            'night_events_rows',
+            'mobile_events_rows',
+        ];
+
+        $keysByTab = [
+            'timeline' => ['timeline_rows'],
+            'unique_ips' => ['unique_ip_rows'],
+            'providers' => ['provider_stats_rows'],
+            'cities' => ['city_stats_rows'],
+            'residencial' => ['night_events_rows'],
+            'movel' => ['mobile_events_rows'],
+        ];
+
+        $keep = $keysByTab[$activeTab] ?? [];
+
+        foreach ($heavyKeys as $key) {
+            if (! in_array($key, $keep, true)) {
+                $report[$key] = [];
+            }
+        }
+
+        $report['_counts'] = $counts;
+
+        return $report;
+    }
+
+    protected function reportCacheKey(AnaliseRun $run): string
+    {
+        return 'analise-generico-report:' . $run->getKey();
+    }
+
+    protected function availableTabs(): array
+    {
+        return ['timeline', 'unique_ips', 'providers', 'cities', 'residencial', 'movel'];
     }
 
     private function extractTextFromFile(string $absPath, string $storedPath): string

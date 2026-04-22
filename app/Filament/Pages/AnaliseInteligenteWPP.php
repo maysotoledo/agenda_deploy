@@ -22,6 +22,7 @@ use Filament\Schemas\Contracts\HasSchemas;
 use Filament\Schemas\Schema;
 use Filament\Support\Enums\Width;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Livewire\Attributes\On;
@@ -377,6 +378,24 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
         }
     }
 
+    public function setTab(string $tab): void
+    {
+        if (! in_array($tab, $this->availableTabs(), true)) {
+            return;
+        }
+
+        $this->tab = $tab;
+
+        if (! $this->runId || ! $this->report) {
+            return;
+        }
+
+        $run = AnaliseRun::find($this->runId);
+        if ($run && $run->status === 'done') {
+            $this->hydrateReportFromRun($run, $tab);
+        }
+    }
+
     // =========================================================
     // ✅ Contatos (Simétricos / Assimétricos) - Modal (CORRIGIDO)
     // =========================================================
@@ -609,9 +628,10 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
         // ✅ garante sender_ip em run_ips e enriquece
         $this->ensureRunIpsForBilhetagem($run);
         $this->enrichPendingIpsNow($run);
+        Cache::forget($this->reportCacheKey($run));
 
-        $this->hydrateReportFromRun($run);
         $this->tab = 'bilhetagem';
+        $this->hydrateReportFromRun($run, 'bilhetagem');
 
         Notification::make()
             ->title("Bilhetagem importada: {$inserted} registros novos")
@@ -661,7 +681,8 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
                 'lastPage' => $this->bilhetagemModalTotal > 0
                     ? (int) ceil($this->bilhetagemModalTotal / $this->bilhetagemModalPerPage)
                     : 1,
-                'contactName' => $this->contactNames[$this->bilhetagemModalPhone] ?? 'Desconhecido',
+                'contactName' => $this->contactNames[$this->bilhetagemModalPhone]
+                    ?? ($this->bilhetagemModalPhoneRaw ?? $this->bilhetagemModalPhone ?? 'Desconhecido'),
             ]))
             ->after(fn () => $this->resetBilhetagemModalState());
     }
@@ -785,8 +806,8 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
             ->form([
                 TextInput::make('name')
                     ->label('Nome')
-                    ->required()
                     ->maxLength(120)
+                    ->helperText('Deixe em branco para remover o nome salvo.')
                     ->default(function () {
                         $k = $this->selectedContactPhone;
                         $current = $k ? ($this->contactNames[$k] ?? null) : null;
@@ -801,7 +822,20 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
 
                 $name = trim((string) ($data['name'] ?? ''));
                 if ($name === '') {
-                    Notification::make()->title('Informe um nome válido')->danger()->send();
+                    AnaliseRunContact::query()
+                        ->where('analise_run_id', $this->runId)
+                        ->where('phone', $this->selectedContactPhone)
+                        ->delete();
+
+                    $this->loadContactNames($this->runId);
+
+                    $run = AnaliseRun::find($this->runId);
+                    if ($run) {
+                        $this->tab = 'bilhetagem';
+                        $this->hydrateReportFromRun($run, 'bilhetagem');
+                    }
+
+                    Notification::make()->title('Nome removido')->success()->send();
                     return;
                 }
 
@@ -819,8 +853,8 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
 
                 $run = AnaliseRun::find($this->runId);
                 if ($run) {
-                    $this->hydrateReportFromRun($run);
                     $this->tab = 'bilhetagem';
+                    $this->hydrateReportFromRun($run, 'bilhetagem');
                 }
 
                 Notification::make()->title('Nome salvo')->success()->send();
@@ -838,12 +872,38 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
     // =========================================================
     // Hydrate report (puxa message_log do banco + garante enrichment)
     // =========================================================
-    protected function hydrateReportFromRun(AnaliseRun $run): void
+    protected function hydrateReportFromRun(AnaliseRun $run, ?string $activeTab = null): void
+    {
+        $this->loadContactNames($run->id);
+
+        $report = Cache::remember(
+            $this->reportCacheKey($run),
+            now()->addHour(),
+            fn () => $this->buildReportFromRun($run)
+        );
+
+        if (! is_array($report)) {
+            return;
+        }
+
+        // injeta contact_name fora do cache para edição/remoção aparecer sem reconstruir o relatório.
+        if (isset($report['bilhetagem_cards']) && is_array($report['bilhetagem_cards'])) {
+            foreach ($report['bilhetagem_cards'] as &$card) {
+                $k = $this->normalizePhoneKey((string) ($card['recipient'] ?? ''));
+                $card['contact_name'] = ($k && isset($this->contactNames[$k]))
+                    ? $this->contactNames[$k]
+                    : (string) ($card['recipient'] ?? '');
+            }
+            unset($card);
+        }
+
+        $this->report = $this->filterReportForActiveTab($report, $activeTab ?? $this->tab);
+    }
+
+    protected function buildReportFromRun(AnaliseRun $run): ?array
     {
         $parsed = $run->report['_parsed'] ?? null;
-        if (! is_array($parsed)) return;
-
-        $this->loadContactNames($run->id);
+        if (! is_array($parsed)) return null;
 
         // ✅ garante sender_ip em run_ips e tenta enriquecer
         $this->ensureRunIpsForBilhetagem($run);
@@ -883,16 +943,75 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
             ];
         }
 
-        $this->report = (new ReportAggregator())->buildReport($parsed, $enrichedByIp);
+        return (new ReportAggregator())->buildReport($parsed, $enrichedByIp);
+    }
 
-        // injeta contact_name
-        if (isset($this->report['bilhetagem_cards']) && is_array($this->report['bilhetagem_cards'])) {
-            foreach ($this->report['bilhetagem_cards'] as &$card) {
-                $k = $this->normalizePhoneKey((string) ($card['recipient'] ?? ''));
-                $card['contact_name'] = ($k && isset($this->contactNames[$k])) ? $this->contactNames[$k] : 'Desconhecido';
+    protected function filterReportForActiveTab(array $report, string $activeTab): array
+    {
+        $counts = [
+            'timeline' => count($report['timeline_rows'] ?? []),
+            'unique_ips' => count($report['unique_ip_rows'] ?? []),
+            'providers' => count($report['provider_stats_rows'] ?? []),
+            'cities' => count($report['city_stats_rows'] ?? []),
+            'residencial' => (int) ($report['night_total_events'] ?? 0),
+            'movel' => (int) ($report['mobile_total_events'] ?? 0),
+            'groups' => count($report['groups_rows'] ?? []),
+            'bilhetagem' => count($report['bilhetagem_cards'] ?? []),
+        ];
+
+        $heavyKeys = [
+            'timeline_rows',
+            'unique_ip_rows',
+            'provider_stats_rows',
+            'city_stats_rows',
+            'provider_ip_map',
+            'groups_rows',
+            'bilhetagem_cards',
+            'night_events_rows',
+            'mobile_events_rows',
+        ];
+
+        $keysByTab = [
+            'timeline' => ['timeline_rows'],
+            'unique_ips' => ['unique_ip_rows'],
+            'providers' => ['provider_stats_rows', 'provider_ip_map'],
+            'cities' => ['city_stats_rows'],
+            'groups' => ['groups_rows'],
+            'bilhetagem' => ['bilhetagem_cards'],
+            'residencial' => ['night_events_rows'],
+            'movel' => ['mobile_events_rows'],
+        ];
+
+        $keep = $keysByTab[$activeTab] ?? [];
+
+        foreach ($heavyKeys as $key) {
+            if (! in_array($key, $keep, true)) {
+                $report[$key] = [];
             }
-            unset($card);
         }
+
+        $report['_counts'] = $counts;
+
+        return $report;
+    }
+
+    protected function reportCacheKey(AnaliseRun $run): string
+    {
+        return 'analise-wpp-report:' . $run->getKey();
+    }
+
+    protected function availableTabs(): array
+    {
+        return [
+            'timeline',
+            'unique_ips',
+            'providers',
+            'cities',
+            'residencial',
+            'movel',
+            'groups',
+            'bilhetagem',
+        ];
     }
 
     // =========================================================
@@ -913,8 +1032,8 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
         $this->runWarnings = data_get($run->report, '_warnings.ignored_bilhetagens', []) ?: [];
 
         if ($run->status === 'done') {
-            $this->hydrateReportFromRun($run);
             $this->tab = 'timeline';
+            $this->hydrateReportFromRun($run, 'timeline');
         }
     }
 

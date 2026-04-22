@@ -113,7 +113,7 @@
                 >
                     <div class="text-sm text-gray-500">Seguidores extraídos do log</div>
                     <div class="mt-1 text-2xl font-semibold">
-                        {{ number_format($report['followers_count'] ?? count($report['followers'] ?? []), 0, ',', '.') }}
+                        {{ number_format($report['followers_count'] ?? data_get($report, '_counts.followers', count($report['followers'] ?? [])), 0, ',', '.') }}
                     </div>
                     <div class="text-xs text-gray-400 mt-1">Clique para ver os nomes</div>
                 </button>
@@ -125,7 +125,7 @@
                 >
                     <div class="text-sm text-gray-500">Seguindo extraídos do log</div>
                     <div class="mt-1 text-2xl font-semibold">
-                        {{ number_format($report['following_count'] ?? count($report['following'] ?? []), 0, ',', '.') }}
+                        {{ number_format($report['following_count'] ?? data_get($report, '_counts.following', count($report['following'] ?? [])), 0, ',', '.') }}
                     </div>
                     <div class="text-xs text-gray-400 mt-1">Clique para ver os nomes</div>
                 </button>
@@ -184,13 +184,13 @@
             ];
 
             $counts = [
-                'timeline' => count($report['timeline_rows'] ?? []),
-                'unique_ips' => count($report['unique_ip_rows'] ?? []),
-                'providers' => count($report['provider_stats_rows'] ?? []),
-                'cities' => count($report['city_stats_rows'] ?? []),
-                'residencial' => (int) ($report['night_total_events'] ?? 0),
-                'movel' => (int) ($report['mobile_total_events'] ?? 0),
-                'direct' => count($report['direct_threads'] ?? []),
+                'timeline' => (int) data_get($report, '_counts.timeline', count($report['timeline_rows'] ?? [])),
+                'unique_ips' => (int) data_get($report, '_counts.unique_ips', count($report['unique_ip_rows'] ?? [])),
+                'providers' => (int) data_get($report, '_counts.providers', count($report['provider_stats_rows'] ?? [])),
+                'cities' => (int) data_get($report, '_counts.cities', count($report['city_stats_rows'] ?? [])),
+                'residencial' => (int) data_get($report, '_counts.residencial', $report['night_total_events'] ?? 0),
+                'movel' => (int) data_get($report, '_counts.movel', $report['mobile_total_events'] ?? 0),
+                'direct' => (int) data_get($report, '_counts.direct', count($report['direct_threads'] ?? [])),
             ];
         @endphp
 
@@ -205,7 +205,7 @@
                             size="sm"
                             :color="$active ? 'primary' : 'gray'"
                             :outlined="! $active"
-                            wire:click="$set('tab', '{{ $key }}')"
+                            wire:click="setTab('{{ $key }}')"
                             class="whitespace-nowrap"
                         >
                             <span class="inline-flex items-center gap-2">

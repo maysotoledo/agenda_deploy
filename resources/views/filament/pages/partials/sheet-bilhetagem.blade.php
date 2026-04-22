@@ -7,6 +7,7 @@
         @php
             $phone = $c['recipient'] ?? '-';
             $contactName = $c['contact_name'] ?? 'Desconhecido';
+            $displayName = ($contactName && $contactName !== 'Desconhecido') ? $contactName : $phone;
             $inAgenda = (bool)($c['in_agenda'] ?? false);
             $latest = $c['latest'] ?? null;
             $total = (int)($c['total'] ?? 0);
@@ -47,14 +48,16 @@
                             title="Clique para editar o nome"
                         >
                             <div class="font-semibold truncate max-w-[260px] hover:underline">
-                                {{ $contactName ?: 'Desconhecido' }}
+                                {{ $displayName }}
                             </div>
                         </button>
                     </div>
 
-                    <div class="mt-1 font-mono text-sm break-all text-gray-700">
-                        {{ $phone }}
-                    </div>
+                    @if($displayName !== $phone)
+                        <div class="mt-1 font-mono text-sm break-all text-gray-700">
+                            {{ $phone }}
+                        </div>
+                    @endif
 
                     <div class="mt-2 flex items-center justify-between gap-3">
                         <div class="text-xs text-gray-500">

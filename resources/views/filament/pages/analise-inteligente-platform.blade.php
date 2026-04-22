@@ -129,12 +129,12 @@
             ];
 
             $counts = [
-                'timeline' => count($report['timeline_rows'] ?? []),
-                'unique_ips' => count($report['unique_ip_rows'] ?? []),
-                'providers' => count($report['provider_stats_rows'] ?? []),
-                'cities' => count($report['city_stats_rows'] ?? []),
-                'residencial' => (int) ($report['night_total_events'] ?? 0),
-                'movel' => (int) ($report['mobile_total_events'] ?? 0),
+                'timeline' => (int) data_get($report, '_counts.timeline', count($report['timeline_rows'] ?? [])),
+                'unique_ips' => (int) data_get($report, '_counts.unique_ips', count($report['unique_ip_rows'] ?? [])),
+                'providers' => (int) data_get($report, '_counts.providers', count($report['provider_stats_rows'] ?? [])),
+                'cities' => (int) data_get($report, '_counts.cities', count($report['city_stats_rows'] ?? [])),
+                'residencial' => (int) data_get($report, '_counts.residencial', $report['night_total_events'] ?? 0),
+                'movel' => (int) data_get($report, '_counts.movel', $report['mobile_total_events'] ?? 0),
             ];
         @endphp
 
@@ -149,7 +149,7 @@
                             size="sm"
                             :color="$active ? 'primary' : 'gray'"
                             :outlined="! $active"
-                            wire:click="$set('tab', '{{ $key }}')"
+                            wire:click="setTab('{{ $key }}')"
                             class="whitespace-nowrap"
                         >
                             <span class="inline-flex items-center gap-2">
