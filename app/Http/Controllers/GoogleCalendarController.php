@@ -9,11 +9,16 @@ use Illuminate\Http\Request;
 
 class GoogleCalendarController extends Controller
 {
+    private function canManageOwnGoogleCalendar($user): bool
+    {
+        return (bool) $user && ($user->hasRole('epc') || $user->hasRole('cartorio_central'));
+    }
+
     public function redirect(Request $request, GoogleCalendarService $googleCalendar): RedirectResponse
     {
         $user = $request->user();
 
-        abort_unless($user?->hasRole('epc'), 403);
+        abort_unless($this->canManageOwnGoogleCalendar($user), 403);
 
         return redirect()->away($googleCalendar->getAuthorizationUrl($user));
     }
@@ -22,7 +27,7 @@ class GoogleCalendarController extends Controller
     {
         $user = $request->user();
 
-        abort_unless($user?->hasRole('epc'), 403);
+        abort_unless($this->canManageOwnGoogleCalendar($user), 403);
 
         if ($request->query('error')) {
             Notification::make()
@@ -60,7 +65,7 @@ class GoogleCalendarController extends Controller
     {
         $user = $request->user();
 
-        abort_unless($user?->hasRole('epc'), 403);
+        abort_unless($this->canManageOwnGoogleCalendar($user), 403);
 
         $googleCalendar->disconnect($user);
 

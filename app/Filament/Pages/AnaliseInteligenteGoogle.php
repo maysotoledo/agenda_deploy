@@ -3,6 +3,10 @@
 namespace App\Filament\Pages;
 
 use App\Filament\Pages\Concerns\HandlesPlatformLogAnalysis;
+use App\Services\AnaliseInteligente\Google\GoogleLogParser;
+use App\Services\AnaliseInteligente\Google\GoogleReportAggregator;
+use App\Services\AnaliseInteligente\Platform\PlatformLogParser;
+use App\Services\AnaliseInteligente\Platform\PlatformReportAggregator;
 use BezhanSalleh\FilamentShield\Traits\HasPageShield;
 use Filament\Pages\Page;
 use Filament\Schemas\Concerns\InteractsWithSchemas;
@@ -39,5 +43,15 @@ class AnaliseInteligenteGoogle extends Page implements HasSchemas
     protected function platformLabel(): string
     {
         return 'Google';
+    }
+
+    protected function makeLogParser(): PlatformLogParser
+    {
+        return new GoogleLogParser();
+    }
+
+    protected function makeReportAggregator(): PlatformReportAggregator
+    {
+        return new GoogleReportAggregator();
     }
 }

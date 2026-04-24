@@ -94,7 +94,7 @@ class RelatoriosProcessados extends Page implements HasTable
                     ->searchable(),
 
                 Tables\Columns\TextColumn::make('source_label')
-                    ->label('Tipo')
+                    ->label('Plataforma')
                     ->state(fn (AnaliseInvestigation $record): string => $this->resolveSourceLabel($record->source))
                     ->badge()
                     ->color(fn (string $state): string => match ($state) {
@@ -145,7 +145,7 @@ class RelatoriosProcessados extends Page implements HasTable
             ])
             ->filters([
                 Tables\Filters\SelectFilter::make('source')
-                    ->label('Tipo')
+                    ->label('Plataforma')
                     ->options([
                         'whatsapp' => 'WhatsApp',
                         'instagram' => 'Instagram',
@@ -235,6 +235,22 @@ class RelatoriosProcessados extends Page implements HasTable
     public function resolveViewUrl(AnaliseInvestigation $investigation): string
     {
         $run = $investigation->runs()->orderBy('id')->first();
+
+        if ($investigation->source === 'google') {
+            return AnaliseInteligenteGoogle::getUrl(['investigation' => $investigation->id]);
+        }
+
+        if ($investigation->source === 'apple') {
+            return AnaliseInteligenteApple::getUrl(['investigation' => $investigation->id]);
+        }
+
+        if ($investigation->source === 'generico') {
+            return AnaliseInteligenteGenerico::getUrl(['investigation' => $investigation->id]);
+        }
+
+        if ($investigation->source === 'instagram') {
+            return AnaliseInteligenteInsta::getUrl(['investigation' => $investigation->id]);
+        }
 
         return match ($investigation->source) {
             'instagram' => $run

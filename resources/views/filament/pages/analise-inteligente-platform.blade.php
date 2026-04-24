@@ -1,11 +1,26 @@
 <x-filament-panels::page>
     <form wire:submit="gerar" class="space-y-6" wire:loading.class="opacity-75" wire:target="gerar">
+        @if ($investigationId)
+            <x-filament::section heading="Investigacao">
+                <div class="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                        <div class="text-xs text-gray-500">Enviando arquivos para</div>
+                        <div class="font-semibold">{{ $investigation['name'] ?? ('Investigacao #' . $investigationId) }}</div>
+                    </div>
+
+                    <div class="text-sm text-gray-500">
+                        {{ $investigation['platform_label'] ?? ucfirst((string) ($investigation['source'] ?? '')) }} - ID {{ $investigationId }}
+                    </div>
+                </div>
+            </x-filament::section>
+        @endif
+
         {{ $this->form }}
 
         <div class="flex flex-wrap gap-3">
             <x-filament::button type="submit" wire:loading.attr="disabled" wire:target="gerar" :disabled="$running">
                 <span wire:loading.remove wire:target="gerar">
-                    {{ $running ? 'Processando...' : 'Gerar relatório' }}
+                    {{ $running ? 'Processando...' : ($investigationId ? 'Enviar arquivos' : 'Criar investigacao') }}
                 </span>
                 <span wire:loading wire:target="gerar">Gerando...</span>
             </x-filament::button>
@@ -16,11 +31,15 @@
         </div>
     </form>
 
-    @if ($runId)
+    @if ($runId || $investigationId)
         <x-filament::section class="mt-6" heading="Progresso">
             <div wire:poll.1000ms="poll" class="space-y-3">
                 <div class="text-sm text-gray-500">
-                    Run ID: <span class="font-mono">{{ $runId }}</span>
+                    @if ($runId)
+                        Run ID: <span class="font-mono">{{ $runId }}</span>
+                    @else
+                        Investigacao ID: <span class="font-mono">{{ $investigationId }}</span>
+                    @endif
                 </div>
 
                 <div class="w-full bg-gray-200 rounded h-3 overflow-hidden">
@@ -28,199 +47,294 @@
                 </div>
 
                 <div class="text-sm">
-                    {{ $progress }}% @if($running) (processando...) @else (finalizado) @endif
+                    {{ $progress }}%
+                    @if($running)
+                        @if(empty($targetRuns))
+                            (preparando alvo e consolidando arquivos...)
+                        @else
+                            (processando...)
+                        @endif
+                    @else
+                        (finalizado)
+                    @endif
                 </div>
             </div>
         </x-filament::section>
     @endif
 
-    @if ($report)
-        <x-filament::section class="mt-6" heading="Resumo da Análise">
-            <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                <div class="rounded-xl border p-4">
-                    <div class="text-sm text-gray-500">Provedor</div>
-                    <div class="font-semibold">{{ $report['platform_label'] ?? 'Provedor' }}</div>
-                </div>
+    @if (! empty($targetRuns))
+        <x-filament::section class="mt-6" heading="Alvos identificados">
+            <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                @foreach($targetRuns as $targetRun)
+                    @php
+                        $isSelected = (int) ($selectedTargetRunId ?? $runId) === (int) ($targetRun['id'] ?? 0);
+                    @endphp
 
-                <div class="rounded-xl border p-4">
-                    <div class="text-sm text-gray-500">Período (GMT-3)</div>
-                    <div class="font-semibold">{{ $report['period_label'] ?? '-' }}</div>
-                </div>
+                    <button
+                        type="button"
+                        wire:click="selectTargetRun({{ (int) ($targetRun['id'] ?? 0) }})"
+                        class="rounded-xl border p-4 text-left transition hover:bg-gray-50 {{ $isSelected ? 'border-primary-500 bg-primary-50/50' : '' }}"
+                    >
+                        <div class="flex items-start justify-between gap-3">
+                            <div class="min-w-0">
+                                <div class="text-xs text-gray-500">Alvo</div>
+                                <div class="truncate font-semibold">{{ $targetRun['target'] ?? 'Alvo nao identificado' }}</div>
+                            </div>
 
-                <div class="rounded-xl border p-4">
-                    <div class="text-sm text-gray-500">Total de eventos</div>
-                    <div class="font-semibold">{{ number_format($report['total_events'] ?? 0, 0, ',', '.') }}</div>
-                </div>
-
-                <div class="rounded-xl border p-4">
-                    <div class="text-sm text-gray-500">IPs únicos</div>
-                    <div class="font-semibold">{{ number_format($report['total_unique_ips'] ?? 0, 0, ',', '.') }}</div>
-                </div>
-
-                <div class="rounded-xl border p-4">
-                    <div class="text-sm text-gray-500">Eventos noturnos (23-06)</div>
-                    <div class="font-semibold">{{ number_format($report['night_total_events'] ?? 0, 0, ',', '.') }}</div>
-                </div>
-
-                <div class="rounded-xl border p-4">
-                    <div class="text-sm text-gray-500">Eventos em rede móvel</div>
-                    <div class="font-semibold">{{ number_format($report['mobile_total_events'] ?? 0, 0, ',', '.') }}</div>
-                </div>
-
-                <div class="rounded-xl border p-4 md:col-span-2 xl:col-span-3">
-                    <div class="text-sm text-gray-500">Contas/e-mails encontrados</div>
-                    <div class="font-semibold break-all">
-                        @if(!empty($report['accounts_found']))
-                            {{ implode(', ', $report['accounts_found']) }}
-                        @else
-                            -
-                        @endif
-                    </div>
-                </div>
-
-                <div class="rounded-xl border p-4 md:col-span-2 xl:col-span-3">
-                    <div class="text-sm text-gray-500">Telefones encontrados</div>
-                    <div class="font-semibold break-all">
-                        @if(!empty($report['phones_found']))
-                            {{ implode(', ', $report['phones_found']) }}
-                        @else
-                            -
-                        @endif
-                    </div>
-                </div>
-
-                <div class="rounded-xl border p-4 md:col-span-2 xl:col-span-3">
-                    <div class="text-sm text-gray-500">Identificadores encontrados</div>
-
-                    @if(!empty($report['identifiers_found']))
-                        <div class="mt-2 flex flex-wrap gap-2">
-                            @foreach($report['identifiers_found'] as $identifier)
-                                <span class="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700">
-                                    {{ $identifier['type'] ?? 'ID' }}: {{ $identifier['value'] ?? '-' }}
-                                </span>
-                            @endforeach
+                            <div class="text-right text-xs text-gray-500">
+                                <div>#{{ $targetRun['id'] ?? '-' }}</div>
+                                <div>{{ $targetRun['progress'] ?? 0 }}%</div>
+                            </div>
                         </div>
-                    @else
-                        <div class="font-semibold">-</div>
-                    @endif
-                </div>
 
-                <div class="rounded-xl border p-4 md:col-span-2 xl:col-span-3">
-                    <div class="text-sm text-gray-500">Achados sugestivos</div>
-                    <ul class="mt-2 list-disc pl-5 space-y-1 text-sm text-gray-700">
-                        @forelse(($report['investigation_hints'] ?? []) as $hint)
-                            <li>{{ $hint }}</li>
-                        @empty
-                            <li>Nenhum achado automático.</li>
-                        @endforelse
-                    </ul>
+                        <div class="mt-3 h-2 overflow-hidden rounded bg-gray-200">
+                            <div class="h-2 bg-primary-600" style="width: {{ (int) ($targetRun['progress'] ?? 0) }}%"></div>
+                        </div>
+                    </button>
+                @endforeach
+            </div>
+        </x-filament::section>
+    @endif
+
+    @if ($report)
+        <x-filament::section class="mt-6" heading="Resumo da Analise">
+            <div class="mb-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                <div class="rounded-xl border p-4">
+                    <div class="text-sm text-gray-500">Alvo selecionado</div>
+                    <div class="font-semibold break-all">{{ $report['selected_target'] ?? ($targetRuns[0]['target'] ?? '-') }}</div>
                 </div>
             </div>
+
+            @if(!empty($report['subscriber_info']) && is_array($report['subscriber_info']))
+                @php $subscriber = $report['subscriber_info']; @endphp
+
+                <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                    <div class="rounded-xl border p-4">
+                        <div class="text-sm text-gray-500">Conta Google</div>
+                        <div class="font-semibold break-all">{{ $subscriber['account_id'] ?? '-' }}</div>
+                    </div>
+
+                    <div class="rounded-xl border p-4">
+                        <div class="text-sm text-gray-500">E-mail principal</div>
+                        <div class="font-semibold break-all">{{ $subscriber['email'] ?? '-' }}</div>
+                    </div>
+
+                    <div class="rounded-xl border p-4">
+                        <div class="text-sm text-gray-500">Nome</div>
+                        <div class="font-semibold">{{ $subscriber['name'] ?? '-' }}</div>
+                    </div>
+
+                    <div class="rounded-xl border p-4">
+                        <div class="text-sm text-gray-500">Criada em (GMT-3)</div>
+                        <div class="font-semibold">{{ $subscriber['created_on_local'] ?? '-' }}</div>
+                    </div>
+
+                    <div class="rounded-xl border p-4">
+                        <div class="text-sm text-gray-500">IP de criacao/termos</div>
+                        <div class="font-mono font-semibold break-all">{{ $subscriber['terms_of_service_ip'] ?? '-' }}</div>
+                    </div>
+
+                    <div class="rounded-xl border p-4">
+                        <div class="text-sm text-gray-500">Status</div>
+                        <div class="font-semibold">{{ $subscriber['status'] ?? '-' }}</div>
+                    </div>
+
+                    <div class="rounded-xl border p-4">
+                        <div class="text-sm text-gray-500">E-mail de recuperacao</div>
+                        <div class="font-semibold break-all">{{ $subscriber['recovery_email'] ?? '-' }}</div>
+                    </div>
+
+                    <div class="rounded-xl border p-4">
+                        <div class="text-sm text-gray-500">Telefone de recuperacao</div>
+                        <div class="font-semibold">{{ $subscriber['recovery_sms'] ?? '-' }}</div>
+                    </div>
+
+                    <div class="rounded-xl border p-4">
+                        <div class="text-sm text-gray-500">Dispositivos informados</div>
+                        <div class="font-semibold">{{ $subscriber['device_information'] ?? '-' }}</div>
+                    </div>
+
+                    <div class="rounded-xl border p-4 md:col-span-2 xl:col-span-3">
+                        <div class="text-sm text-gray-500">Servicos</div>
+                        <div class="font-semibold">
+                            @if(!empty($subscriber['services']))
+                                {{ implode(', ', $subscriber['services']) }}
+                            @else
+                                -
+                            @endif
+                        </div>
+                    </div>
+                </div>
+            @else
+                <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                    <div class="rounded-xl border p-4">
+                        <div class="text-sm text-gray-500">Periodo (GMT-3)</div>
+                        <div class="font-semibold">{{ $report['period_label'] ?? '-' }}</div>
+                    </div>
+
+                    <div class="rounded-xl border p-4">
+                        <div class="text-sm text-gray-500">Total de eventos</div>
+                        <div class="font-semibold">{{ number_format($report['total_events'] ?? 0, 0, ',', '.') }}</div>
+                    </div>
+
+                    <div class="rounded-xl border p-4">
+                        <div class="text-sm text-gray-500">IPs unicos</div>
+                        <div class="font-semibold">{{ number_format($report['total_unique_ips'] ?? 0, 0, ',', '.') }}</div>
+                    </div>
+
+                    <div class="rounded-xl border p-4">
+                        <div class="text-sm text-gray-500">Contas/e-mails</div>
+                        <div class="font-semibold break-all">
+                            @if(!empty($report['accounts_found']))
+                                {{ implode(', ', $report['accounts_found']) }}
+                            @elseif(!empty($report['emails_found']))
+                                {{ implode(', ', $report['emails_found']) }}
+                            @else
+                                -
+                            @endif
+                        </div>
+                    </div>
+
+                    <div class="rounded-xl border p-4">
+                        <div class="text-sm text-gray-500">Telefones</div>
+                        <div class="font-semibold break-all">
+                            @if(!empty($report['phones_found']))
+                                {{ implode(', ', $report['phones_found']) }}
+                            @else
+                                -
+                            @endif
+                        </div>
+                    </div>
+
+                    <div class="rounded-xl border p-4">
+                        <div class="text-sm text-gray-500">Plataforma</div>
+                        <div class="font-semibold">{{ $report['platform_label'] ?? ($investigation['platform_label'] ?? '-') }}</div>
+                    </div>
+                </div>
+            @endif
         </x-filament::section>
 
         @php
+            $componentPrefix = (($investigation['source'] ?? null) === 'google') ? 'google' : 'generic';
             $tabs = [
                 'timeline' => ['label' => 'Timeline', 'icon' => 'heroicon-o-clock'],
-                'unique_ips' => ['label' => 'IPs Únicos', 'icon' => 'heroicon-o-globe-alt'],
+                'unique_ips' => ['label' => 'IPs unicos', 'icon' => 'heroicon-o-globe-alt'],
                 'providers' => ['label' => 'Provedores', 'icon' => 'heroicon-o-building-office-2'],
                 'cities' => ['label' => 'Cidades', 'icon' => 'heroicon-o-map-pin'],
+                'maps' => ['label' => 'Maps', 'icon' => 'heroicon-o-map'],
+                'search' => ['label' => 'Pesquisa', 'icon' => 'heroicon-o-magnifying-glass'],
+                'user_agents' => ['label' => 'Dispositivo/UA', 'icon' => 'heroicon-o-device-phone-mobile'],
                 'residencial' => ['label' => 'Noturno (23-06)', 'icon' => 'heroicon-o-moon'],
-                'movel' => ['label' => 'Móvel', 'icon' => 'heroicon-o-device-phone-mobile'],
+                'movel' => ['label' => 'Movel', 'icon' => 'heroicon-o-device-phone-mobile'],
             ];
 
+            if (($investigation['source'] ?? null) === 'google') {
+                $tabs['vinculo'] = ['label' => 'Vinculo', 'icon' => 'heroicon-o-link'];
+            }
+
             $counts = [
-                'timeline' => (int) data_get($report, '_counts.timeline', count($report['timeline_rows'] ?? [])),
-                'unique_ips' => (int) data_get($report, '_counts.unique_ips', count($report['unique_ip_rows'] ?? [])),
-                'providers' => (int) data_get($report, '_counts.providers', count($report['provider_stats_rows'] ?? [])),
-                'cities' => (int) data_get($report, '_counts.cities', count($report['city_stats_rows'] ?? [])),
+                'timeline' => (int) data_get($report, '_counts.timeline', 0),
+                'unique_ips' => (int) data_get($report, '_counts.unique_ips', 0),
+                'providers' => (int) data_get($report, '_counts.providers', 0),
+                'cities' => (int) data_get($report, '_counts.cities', 0),
+                'maps' => (int) data_get($report, '_counts.maps', 0),
+                'search' => (int) data_get($report, '_counts.search', 0),
+                'user_agents' => (int) data_get($report, '_counts.user_agents', 0),
                 'residencial' => (int) data_get($report, '_counts.residencial', $report['night_total_events'] ?? 0),
                 'movel' => (int) data_get($report, '_counts.movel', $report['mobile_total_events'] ?? 0),
+                'vinculo' => (int) data_get($report, '_counts.vinculo', count($report['vinculo_rows'] ?? [])),
             ];
         @endphp
 
         <x-filament::section class="mt-6" heading="Planilhas">
-            <div class="overflow-x-auto">
-                <div class="inline-flex gap-2 min-w-max pb-1">
-                    @foreach($tabs as $key => $meta)
-                        @php $active = $tab === $key; @endphp
+            <div class="flex flex-wrap gap-2">
+                @foreach($tabs as $key => $meta)
+                    @php $active = $tab === $key; @endphp
 
-                        <x-filament::button
-                            type="button"
-                            size="sm"
-                            :color="$active ? 'primary' : 'gray'"
-                            :outlined="! $active"
-                            wire:click="setTab('{{ $key }}')"
-                            class="whitespace-nowrap"
-                        >
-                            <span class="inline-flex items-center gap-2">
-                                <x-filament::icon :icon="$meta['icon']" class="h-4 w-4" />
-                                <span class="font-semibold">{{ $meta['label'] }}</span>
+                    <x-filament::button
+                        type="button"
+                        size="sm"
+                        :color="$active ? 'primary' : 'gray'"
+                        :outlined="! $active"
+                        wire:click="setTab('{{ $key }}')"
+                        class="whitespace-nowrap"
+                    >
+                        <span class="inline-flex items-center gap-2">
+                            <x-filament::icon :icon="$meta['icon']" class="h-4 w-4" />
+                            <span class="font-semibold">{{ $meta['label'] }}</span>
 
-                                <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium
-                                    {{ $active ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700' }}">
-                                    {{ number_format($counts[$key] ?? 0, 0, ',', '.') }}
-                                </span>
+                            <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium
+                                {{ $active ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700' }}">
+                                {{ number_format($counts[$key] ?? 0, 0, ',', '.') }}
                             </span>
-                        </x-filament::button>
-                    @endforeach
-                </div>
+                        </span>
+                    </x-filament::button>
+                @endforeach
             </div>
         </x-filament::section>
 
         <div class="mt-6 space-y-6">
             @if ($tab === 'timeline')
                 <x-filament::section heading="Timeline (Eventos)">
-                    <livewire:analise-inteligente.generic-timeline-table
-                        :rows="$report['timeline_rows'] ?? []"
-                        :wire:key="'platform-timeline-' . $runId"
-                    />
+                    @livewire('analise-inteligente.' . $componentPrefix . '-timeline-table', ['runId' => $runId], key('platform-timeline-' . $componentPrefix . '-' . $runId))
                 </x-filament::section>
             @endif
 
             @if ($tab === 'unique_ips')
-                <x-filament::section heading="IPs Únicos (Relevância)">
-                    <livewire:analise-inteligente.generic-unique-ips-table
-                        :rows="$report['unique_ip_rows'] ?? []"
-                        :wire:key="'platform-unique-' . $runId"
-                    />
+                <x-filament::section heading="IPs Unicos (Relevancia)">
+                    @livewire('analise-inteligente.' . $componentPrefix . '-unique-ips-table', ['runId' => $runId], key('platform-unique-' . $componentPrefix . '-' . $runId))
                 </x-filament::section>
             @endif
 
             @if ($tab === 'providers')
-                <x-filament::section heading="Provedores (Métricas)">
-                    <livewire:analise-inteligente.generic-providers-table
-                        :rows="$report['provider_stats_rows'] ?? []"
-                        :wire:key="'platform-providers-' . $runId"
-                    />
+                <x-filament::section heading="Provedores (Metricas)">
+                    @livewire('analise-inteligente.' . $componentPrefix . '-providers-table', ['runId' => $runId], key('platform-providers-' . $componentPrefix . '-' . $runId))
                 </x-filament::section>
             @endif
 
             @if ($tab === 'cities')
-                <x-filament::section heading="Cidades (Concentração)">
-                    <livewire:analise-inteligente.generic-cities-table
-                        :rows="$report['city_stats_rows'] ?? []"
-                        :wire:key="'platform-cities-' . $runId"
-                    />
+                <x-filament::section heading="Cidades (Concentracao)">
+                    @livewire('analise-inteligente.' . $componentPrefix . '-cities-table', ['runId' => $runId], key('platform-cities-' . $componentPrefix . '-' . $runId))
                 </x-filament::section>
+            @endif
+
+            @if ($tab === 'maps')
+                <x-filament::section heading="Maps">
+                    @livewire('analise-inteligente.' . $componentPrefix . '-maps-table', ['runId' => $runId], key('platform-maps-' . $componentPrefix . '-' . $runId))
+                </x-filament::section>
+            @endif
+
+            @if ($tab === 'search')
+                <x-filament::section heading="Pesquisa">
+                    @livewire('analise-inteligente.' . $componentPrefix . '-search-table', ['runId' => $runId], key('platform-search-' . $componentPrefix . '-' . $runId))
+                </x-filament::section>
+            @endif
+
+            @if ($tab === 'user_agents')
+                @include('filament.pages.partials.sheet-platform-devices', ['report' => $report, 'runId' => $runId, 'componentPrefix' => $componentPrefix])
             @endif
 
             @if ($tab === 'residencial')
                 <x-filament::section heading="Noturno (23-06)">
-                    <livewire:analise-inteligente.generic-timeline-table
-                        :rows="$report['night_events_rows'] ?? []"
-                        :wire:key="'platform-night-' . $runId"
-                    />
+                    @livewire('analise-inteligente.' . $componentPrefix . '-timeline-table', ['runId' => $runId, 'scope' => 'night'], key('platform-night-' . $componentPrefix . '-' . $runId))
                 </x-filament::section>
             @endif
 
             @if ($tab === 'movel')
-                <x-filament::section heading="Móvel">
-                    <livewire:analise-inteligente.generic-timeline-table
-                        :rows="$report['mobile_events_rows'] ?? []"
-                        :wire:key="'platform-mobile-' . $runId"
-                    />
+                <x-filament::section heading="Movel">
+                    @livewire('analise-inteligente.' . $componentPrefix . '-timeline-table', ['runId' => $runId, 'scope' => 'mobile'], key('platform-mobile-' . $componentPrefix . '-' . $runId))
+                </x-filament::section>
+            @endif
+
+            @if ($tab === 'vinculo')
+                <x-filament::section heading="Vinculo">
+                    @include('filament.pages.partials.sheet-vinculo', [
+                        'rows' => $report['vinculo_rows'] ?? [],
+                    ])
                 </x-filament::section>
             @endif
         </div>
+
+        <x-filament-actions::modals />
     @endif
 </x-filament-panels::page>

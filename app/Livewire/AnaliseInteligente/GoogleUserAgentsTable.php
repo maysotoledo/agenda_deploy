@@ -1,0 +1,50 @@
+<?php
+
+namespace App\Livewire\AnaliseInteligente;
+
+use App\Models\AnaliseRunEvent;
+use Filament\Tables\Columns\TextColumn;
+use Filament\Tables\Table;
+use Filament\Tables\TableComponent;
+
+class GoogleUserAgentsTable extends TableComponent
+{
+    public int $runId;
+
+    public function table(Table $table): Table
+    {
+        return $table
+            ->query(
+                AnaliseRunEvent::query()
+                    ->where('analise_run_id', $this->runId)
+                    ->where('event_type', 'access')
+                    ->whereNotNull('user_agent')
+                    ->selectRaw('MIN(id) as id, user_agent, COUNT(*) as occurrences, MAX(occurred_at) as occurred_at')
+                    ->groupBy('user_agent')
+            )
+            ->columns([
+                TextColumn::make('user_agent')
+                    ->label('User-Agent')
+                    ->wrap(),
+
+                TextColumn::make('occurrences')
+                    ->label('Ocorrencias')
+                    ->numeric()
+                    ->sortable(),
+
+                TextColumn::make('occurred_at')
+                    ->label('Ultimo (GMT-3)')
+                    ->formatStateUsing(fn ($state): ?string => $state?->timezone('America/Sao_Paulo')->format('d/m/Y H:i:s'))
+                    ->sortable(),
+            ])
+            ->defaultSort('occurrences', 'desc')
+            ->paginated([10, 25, 50])
+            ->defaultPaginationPageOption(10);
+    }
+
+    public function render()
+    {
+        return view('livewire.analise-inteligente.google-user-agents-table');
+    }
+
+}

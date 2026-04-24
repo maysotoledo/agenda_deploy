@@ -18,6 +18,7 @@ class GoogleCalendarService
     private const TOKEN_URL = 'https://oauth2.googleapis.com/token';
     private const CALENDAR_API_URL = 'https://www.googleapis.com/calendar/v3';
     private const SCOPE = 'https://www.googleapis.com/auth/calendar.events';
+    private const AGENDA_TIMEZONE = 'America/Sao_Paulo';
 
     public function isConfigured(): bool
     {
@@ -181,10 +182,10 @@ class GoogleCalendarService
 
     private function makeEventPayload(Evento $evento): array
     {
-        $timezone = config('app.timezone', 'America/Cuiaba');
-        $startsAt = Carbon::parse($evento->starts_at)->timezone($timezone);
+        $timezone = self::AGENDA_TIMEZONE;
+        $startsAt = Carbon::parse($evento->starts_at, $timezone);
         $endsAt = $evento->ends_at
-            ? Carbon::parse($evento->ends_at)->timezone($timezone)
+            ? Carbon::parse($evento->ends_at, $timezone)
             : $startsAt->copy()->addHour();
 
         $tipo = $evento->oitiva_online ? 'Online' : 'Presencial';

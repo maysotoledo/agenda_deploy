@@ -14,6 +14,7 @@ class AnaliseRun extends Model
         'user_id', // ✅ novo
         'investigation_id',
         'uuid',
+        'source',
         'target',
         'total_unique_ips',
         'processed_unique_ips',
@@ -21,10 +22,16 @@ class AnaliseRun extends Model
         'status',
         'error_message',
         'report',
+        'summary',
+        'started_at',
+        'finished_at',
     ];
 
     protected $casts = [
         'report' => 'array',
+        'summary' => 'array',
+        'started_at' => 'datetime',
+        'finished_at' => 'datetime',
     ];
 
     public function ips(): HasMany
@@ -35,6 +42,31 @@ class AnaliseRun extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function events(): HasMany
+    {
+        return $this->hasMany(AnaliseRunEvent::class, 'analise_run_id');
+    }
+
+    public function steps(): HasMany
+    {
+        return $this->hasMany(AnaliseRunStep::class, 'analise_run_id');
+    }
+
+    public function contacts(): HasMany
+    {
+        return $this->hasMany(AnaliseRunContact::class, 'analise_run_id');
+    }
+
+    public function messages(): HasMany
+    {
+        return $this->hasMany(AnaliseRunMessage::class, 'analise_run_id');
+    }
+
+    public function media(): HasMany
+    {
+        return $this->hasMany(AnaliseRunMedia::class, 'analise_run_id');
     }
 
     public function investigation(): BelongsTo

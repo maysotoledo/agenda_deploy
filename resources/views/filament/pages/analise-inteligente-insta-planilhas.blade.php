@@ -1,5 +1,17 @@
 <x-filament-panels::page>
     <form wire:submit="gerar" class="space-y-6" wire:loading.class="opacity-75" wire:target="gerar">
+        @if ($investigationId)
+            <x-filament::section heading="Investigacao">
+                <div class="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                        <div class="text-xs text-gray-500">Enviando arquivos para</div>
+                        <div class="font-semibold">{{ $investigation['name'] ?? ('Investigacao #' . $investigationId) }}</div>
+                    </div>
+                    <div class="text-sm text-gray-500">Instagram - ID {{ $investigationId }}</div>
+                </div>
+            </x-filament::section>
+        @endif
+
         {{ $this->form }}
 
         <div class="flex flex-wrap gap-3">
@@ -10,7 +22,7 @@
                 :disabled="$running"
             >
                 <span wire:loading.remove wire:target="gerar">
-                    {{ $running ? 'Processando...' : 'Gerar relatório' }}
+                    {{ $running ? 'Processando...' : ($investigationId ? 'Enviar arquivos' : 'Criar investigacao') }}
                 </span>
 
                 <span wire:loading wire:target="gerar">
@@ -31,7 +43,7 @@
         </div>
     </form>
 
-    @if ($runId)
+    @if ($runId || $investigationId)
         <x-filament::section class="mt-6" heading="Progresso">
             <div
                 class="space-y-3"
@@ -40,7 +52,11 @@
                 @endif
             >
                 <div class="text-sm text-gray-500">
-                    Run ID: <span class="font-mono">{{ $runId }}</span>
+                    @if ($runId)
+                        Run ID: <span class="font-mono">{{ $runId }}</span>
+                    @else
+                        Investigacao ID: <span class="font-mono">{{ $investigationId }}</span>
+                    @endif
                 </div>
 
                 <div class="w-full bg-gray-200 rounded h-3 overflow-hidden">
@@ -48,8 +64,48 @@
                 </div>
 
                 <div class="text-sm">
-                    {{ $progress }}% @if($running) (processando...) @else (finalizado) @endif
+                    {{ $progress }}%
+                    @if($running)
+                        @if(empty($targetRuns))
+                            (preparando alvo e consolidando arquivos...)
+                        @else
+                            (processando...)
+                        @endif
+                    @else
+                        (finalizado)
+                    @endif
                 </div>
+            </div>
+        </x-filament::section>
+    @endif
+
+    @if (! empty($targetRuns))
+        <x-filament::section class="mt-6" heading="Alvos identificados">
+            <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                @foreach($targetRuns as $targetRun)
+                    @php $isSelected = (int) ($selectedTargetRunId ?? $runId) === (int) ($targetRun['id'] ?? 0); @endphp
+
+                    <button
+                        type="button"
+                        wire:click="selectTargetRun({{ (int) ($targetRun['id'] ?? 0) }})"
+                        class="rounded-xl border p-4 text-left transition hover:bg-gray-50 {{ $isSelected ? 'border-primary-500 bg-primary-50/50' : '' }}"
+                    >
+                        <div class="flex items-start justify-between gap-3">
+                            <div class="min-w-0">
+                                <div class="text-xs text-gray-500">Alvo</div>
+                                <div class="truncate font-semibold">{{ $targetRun['target'] ?? 'Alvo nao identificado' }}</div>
+                            </div>
+                            <div class="text-right text-xs text-gray-500">
+                                <div>#{{ $targetRun['id'] ?? '-' }}</div>
+                                <div>{{ $targetRun['progress'] ?? 0 }}%</div>
+                            </div>
+                        </div>
+
+                        <div class="mt-3 h-2 overflow-hidden rounded bg-gray-200">
+                            <div class="h-2 bg-primary-600" style="width: {{ (int) ($targetRun['progress'] ?? 0) }}%"></div>
+                        </div>
+                    </button>
+                @endforeach
             </div>
         </x-filament::section>
     @endif

@@ -14,16 +14,18 @@ class PlatformLogParser
     public function parse(string $rawText): array
     {
         $text = $this->normalizeText($rawText);
+        $extraEvents = $this->extractExtraEvents($rawText, $text);
 
         $events = $this->deduplicateEvents(array_merge(
+            $extraEvents,
             $this->extractJsonEvents($text),
-            $this->extractTextEvents($text),
+            $this->shouldExtractTextEvents($rawText, $text, $extraEvents) ? $this->extractTextEvents($text) : [],
         ));
 
         $times = array_values(array_filter(array_map(fn ($e) => $e['time_utc'] ?? null, $events)));
         usort($times, fn ($a, $b) => $a->timestamp <=> $b->timestamp);
 
-        return [
+        return array_merge([
             'source' => $this->source,
             'platform_label' => $this->label,
             'events' => $events,
@@ -31,14 +33,32 @@ class PlatformLogParser
             'phones' => $this->extractPhones($text),
             'identifiers' => $this->extractIdentifiers($text),
             'range_start_utc' => $times[0] ?? null,
-            'range_end_utc' => $times[count($times) - 1] ?? null,
-        ];
+            'range_end_utc' => count($times) > 0 ? $times[count($times) - 1] : null,
+        ], $this->extractExtraParsedData($rawText, $text, $events));
     }
 
-    private function normalizeText(string $raw): string
+    protected function extractExtraEvents(string $rawText, string $text): array
+    {
+        return [];
+    }
+
+    protected function shouldExtractTextEvents(string $rawText, string $text, array $extraEvents): bool
+    {
+        return true;
+    }
+
+    protected function extractExtraParsedData(string $rawText, string $text, array $events): array
+    {
+        return [];
+    }
+
+    protected function normalizeText(string $raw): string
     {
         if (preg_match('/<\s*(html|body|table|div|span|br)\b/i', $raw)) {
-            $raw = html_entity_decode(strip_tags(str_ireplace(['<br>', '<br/>', '<br />'], "\n", $raw)), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            $raw = str_ireplace(['<br>', '<br/>', '<br />'], "\n", $raw);
+            $raw = preg_replace('/<\s*\/\s*(li|tr|p|div|h[1-6]|table|section)\s*>/i', "\n", $raw) ?? $raw;
+            $raw = preg_replace('/<\s*\/\s*t[dh]\s*>/i', "\t", $raw) ?? $raw;
+            $raw = html_entity_decode(strip_tags($raw), ENT_QUOTES | ENT_HTML5, 'UTF-8');
         }
 
         $raw = str_replace(["\r\n", "\r"], "\n", $raw);
@@ -48,7 +68,7 @@ class PlatformLogParser
         return trim($raw);
     }
 
-    private function extractJsonEvents(string $text): array
+    protected function extractJsonEvents(string $text): array
     {
         $decoded = json_decode($text, true);
 
@@ -62,7 +82,7 @@ class PlatformLogParser
         return $events;
     }
 
-    private function walkJson(mixed $node, array &$events): void
+    protected function walkJson(mixed $node, array &$events): void
     {
         if (! is_array($node)) {
             return;
@@ -87,7 +107,7 @@ class PlatformLogParser
         }
     }
 
-    private function flattenAssoc(array $data, string $prefix = ''): array
+    protected function flattenAssoc(array $data, string $prefix = ''): array
     {
         $out = [];
 
@@ -107,12 +127,12 @@ class PlatformLogParser
         return $out;
     }
 
-    private function isAssoc(array $value): bool
+    protected function isAssoc(array $value): bool
     {
         return array_keys($value) !== range(0, count($value) - 1);
     }
 
-    private function extractTextEvents(string $text): array
+    protected function extractTextEvents(string $text): array
     {
         $events = [];
 
@@ -126,7 +146,7 @@ class PlatformLogParser
         return $events;
     }
 
-    private function buildBlocks(string $text): array
+    protected function buildBlocks(string $text): array
     {
         $blocks = [];
         $current = [];
@@ -161,12 +181,12 @@ class PlatformLogParser
         return array_values(array_unique($blocks));
     }
 
-    private function startsWithDateTime(string $line): bool
+    protected function startsWithDateTime(string $line): bool
     {
         return (bool) preg_match('/^\s*(?:\d{4}-\d{2}-\d{2}[T\s]|\d{1,2}\/\d{1,2}\/\d{4}\s+)/', $line);
     }
 
-    private function parseBlock(string $block): ?array
+    protected function parseBlock(string $block): ?array
     {
         $ip = $this->extractBestIpFromBlock($block);
         if (! $ip) {
@@ -191,12 +211,12 @@ class PlatformLogParser
         ];
     }
 
-    private function extractDateFromText(string $text): array
+    protected function extractDateFromText(string $text): array
     {
         $patterns = [
             '/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\b/',
-            '/\b\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s*(?:UTC|GMT[+-]?\d+|[+-]\d{2}:?\d{2})?\b/i',
-            '/\b\d{1,2}\/\d{1,2}\/\d{4}\s+\d{2}:\d{2}:\d{2}\s*(?:UTC|GMT[+-]?\d+|[+-]\d{2}:?\d{2})?\b/i',
+            '/\b\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s*(?:Z|UTC|GMT[+-]?\d+|[+-]\d{2}:?\d{2})?\b/i',
+            '/\b\d{1,2}\/\d{1,2}\/\d{4}\s+\d{2}:\d{2}:\d{2}\s*(?:Z|UTC|GMT[+-]?\d+|[+-]\d{2}:?\d{2})?\b/i',
         ];
 
         foreach ($patterns as $pattern) {
@@ -216,10 +236,10 @@ class PlatformLogParser
         return ['date' => null, 'tz_label' => null];
     }
 
-    private function parseDate(string $raw, string $tzLabel): ?Carbon
+    protected function parseDate(string $raw, string $tzLabel): ?Carbon
     {
         $timezone = $this->mapTzLabelToTimezone($tzLabel);
-        $normalized = trim(preg_replace('/\s*(UTC|GMT[+-]?\d+|[+-]\d{2}:?\d{2})$/i', '', $raw) ?? $raw);
+        $normalized = trim(preg_replace('/\s*(Z|UTC|GMT[+-]?\d+|[+-]\d{2}:?\d{2})$/i', '', $raw) ?? $raw);
 
         try {
             if (str_contains($raw, 'T')) {
@@ -244,7 +264,7 @@ class PlatformLogParser
         return null;
     }
 
-    private function extractTzLabel(string $text): ?string
+    protected function extractTzLabel(string $text): ?string
     {
         if (preg_match('/\b(UTC|GMT[+-]?\d+|GMT|[+-]\d{2}:?\d{2}|Z)\b/i', $text, $m)) {
             return strtoupper($m[1]) === 'Z' ? 'UTC' : strtoupper($m[1]);
@@ -253,7 +273,7 @@ class PlatformLogParser
         return null;
     }
 
-    private function mapTzLabelToTimezone(?string $tzLabel): string
+    protected function mapTzLabelToTimezone(?string $tzLabel): string
     {
         $tzLabel = strtoupper(trim((string) $tzLabel));
 
@@ -272,12 +292,12 @@ class PlatformLogParser
         return 'UTC';
     }
 
-    private function containsIp(string $text): bool
+    protected function containsIp(string $text): bool
     {
         return $this->extractBestIpFromBlock($text) !== null;
     }
 
-    private function extractBestIpFromBlock(string $block): ?string
+    protected function extractBestIpFromBlock(string $block): ?string
     {
         $candidates = [];
 
@@ -310,7 +330,7 @@ class PlatformLogParser
         return $candidates[count($candidates) - 1]['ip'];
     }
 
-    private function shouldIgnoreIpv4(string $ip, string $block, int $offset): bool
+    protected function shouldIgnoreIpv4(string $ip, string $block, int $offset): bool
     {
         if ($ip === '0.0.0.0' || str_starts_with($ip, '127.') || preg_match('/^\d{1,3}\.0\.0\.0$/', $ip)) {
             $around = substr($block, max(0, $offset - 30), 70);
@@ -326,7 +346,7 @@ class PlatformLogParser
         return false;
     }
 
-    private function extractLogicalPort(string $text, string $ip): ?int
+    protected function extractLogicalPort(string $text, string $ip): ?int
     {
         if (preg_match('/\b' . preg_quote($ip, '/') . '\b\s*[:;,]?\s*(?:port|porta)?\s*(\d{1,5})\b/i', $text, $m)) {
             $port = (int) $m[1];
@@ -336,7 +356,7 @@ class PlatformLogParser
         return null;
     }
 
-    private function cleanDescription(string $block, string $ip): string
+    protected function cleanDescription(string $block, string $ip): string
     {
         $description = str_replace($ip, '', $block);
         $description = preg_replace('/\s+/', ' ', $description) ?? $description;
@@ -344,7 +364,7 @@ class PlatformLogParser
         return trim($description) !== '' ? trim($description) : 'Evento de acesso';
     }
 
-    private function guessAction(string $description): ?string
+    protected function guessAction(string $description): ?string
     {
         $text = mb_strtolower($description);
 
@@ -378,7 +398,7 @@ class PlatformLogParser
         return null;
     }
 
-    private function extractEmails(string $text): array
+    protected function extractEmails(string $text): array
     {
         preg_match_all('/[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/i', $text, $matches);
         $emails = array_values(array_unique(array_map('strtolower', $matches[0] ?? [])));
@@ -387,7 +407,7 @@ class PlatformLogParser
         return $emails;
     }
 
-    private function extractPhones(string $text): array
+    protected function extractPhones(string $text): array
     {
         preg_match_all('/(?<!\d)(?:\+?\d[\d\s().-]{8,}\d)(?!\d)/', $text, $matches);
         $phones = [];
@@ -402,14 +422,11 @@ class PlatformLogParser
         return array_values($phones);
     }
 
-    private function extractIdentifiers(string $text): array
+    protected function extractIdentifiers(string $text): array
     {
         $patterns = [
             'IMEI' => '/\b\d{15}\b/',
-            'DSID' => '/\b(?:DSID|dsid)\s*[:#-]?\s*([A-Z0-9._-]{5,})/i',
             'Serial' => '/\b(?:serial|n[uú]mero de s[eé]rie|cssn)\s*[:#-]?\s*([A-Z0-9._-]{5,})/i',
-            'Android ID' => '/\b(?:android id|android_id)\s*[:#-]?\s*([a-f0-9]{8,32})/i',
-            'GAIA' => '/\b(?:gaia|google id)\s*[:#-]?\s*([A-Z0-9._-]{5,})/i',
         ];
 
         $out = [];
@@ -431,7 +448,7 @@ class PlatformLogParser
         return array_values($out);
     }
 
-    private function deduplicateEvents(array $events): array
+    protected function deduplicateEvents(array $events): array
     {
         $out = [];
 

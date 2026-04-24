@@ -2,16 +2,19 @@
 
 namespace App\Filament\Pages;
 
+use App\Jobs\AnaliseInteligente\Instagram\ProcessInstagramInvestigationJob;
 use App\Models\AnaliseRun;
 use App\Models\AnaliseInvestigation;
 use App\Models\AnaliseRunIp;
+use App\Filament\Pages\RelatoriosProcessados;
 use App\Models\IpEnrichment;
+use App\Services\AnaliseInteligente\RunPayloadStorage;
 use App\Services\AnaliseInteligente\Instagram\RecordsHtmlParser;
 use App\Services\AnaliseInteligente\Instagram\ReportAggregator;
-use App\Services\AnaliseInteligente\RunStepper;
 use BezhanSalleh\FilamentShield\Traits\HasPageShield;
 use Filament\Actions\Action;
 use Filament\Forms\Components\FileUpload;
+use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
 use Filament\Schemas\Concerns\InteractsWithSchemas;
@@ -20,7 +23,6 @@ use Filament\Schemas\Schema;
 use Filament\Support\Enums\Width;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Livewire\Attributes\On;
@@ -39,7 +41,11 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
 
     public ?array $data = [];
 
+    public ?int $investigationId = null;
+    public ?array $investigation = null;
     public ?int $runId = null;
+    public ?int $selectedTargetRunId = null;
+    public array $targetRuns = [];
     public int $progress = 0;
     public bool $running = false;
     public ?array $report = null;
@@ -70,18 +76,32 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
 
     public function mount(): void
     {
-        $this->form->fill();
+        $investigationId = request()->integer('investigation');
+        if ($investigationId) {
+            $this->loadExistingInvestigation($investigationId);
+        }
 
         $runId = request()->integer('run');
         if ($runId) {
             $this->loadExistingRun($runId);
         }
+
+        $this->form->fill([
+            'investigation_name' => $this->investigation['name'] ?? null,
+        ]);
     }
 
     public function form(Schema $schema): Schema
     {
         return $schema
             ->components([
+                TextInput::make('investigation_name')
+                    ->label('Nome da investigacao')
+                    ->required(fn () => $this->investigationId === null)
+                    ->disabled(fn () => $this->investigationId !== null)
+                    ->dehydrated(fn () => $this->investigationId === null)
+                    ->maxLength(160),
+
                 FileUpload::make('html_file')
                     ->label('Arquivos (ZIP/HTML): records.html')
                     ->required()
@@ -110,6 +130,8 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
         $this->report = null;
         $this->progress = 0;
         $this->running = false;
+        $this->targetRuns = [];
+        $this->selectedTargetRunId = null;
         $this->tab = 'timeline';
 
         $this->selectedProvider = null;
@@ -118,6 +140,11 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
         $this->closeRelationshipModalState();
 
         $state = $this->form->getState();
+        $investigation = $this->resolveInvestigationForUpload($state);
+        if (! $investigation) {
+            return;
+        }
+
         $storedPaths = $state['html_file'] ?? null;
 
         if (is_string($storedPaths)) $storedPaths = [$storedPaths];
@@ -126,6 +153,36 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
             Notification::make()->title('Envie pelo menos 1 arquivo')->danger()->send();
             return;
         }
+
+        $batchId = (string) Str::uuid();
+
+        ProcessInstagramInvestigationJob::dispatch(
+            investigationId: $investigation->id,
+            userId: (int) auth()->id(),
+            storedPaths: array_values($storedPaths),
+            batchId: $batchId,
+        );
+
+        $this->investigationId = $investigation->id;
+        $this->investigation = [
+            'id' => $investigation->id,
+            'name' => $investigation->name,
+            'source' => $investigation->source,
+            'platform_label' => 'Instagram',
+        ];
+        $this->runId = null;
+        $this->selectedTargetRunId = null;
+        $this->targetRuns = [];
+        $this->running = true;
+        $this->progress = 0;
+
+        Notification::make()
+            ->title('Processamento enviado para a fila')
+            ->body('Os arquivos foram enfileirados; a tela agora acompanha o progresso pelo banco.')
+            ->success()
+            ->send();
+
+        return;
 
         $disk = Storage::disk('public');
 
@@ -148,6 +205,73 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
         }
 
         // principal = maior ip_events
+        $groups = [];
+        foreach ($parsedList as $item) {
+            $p = (array) ($item['parsed'] ?? []);
+            $targetRaw = $p['target'] ?? ($p['account_identifier'] ?? null);
+            $targetKey = $this->normalizeInstagramTarget(is_string($targetRaw) ? $targetRaw : null);
+
+            if (! $targetKey) {
+                $targetKey = 'sem-alvo:' . md5((string) ($item['stored_path'] ?? Str::uuid()));
+            }
+
+            $groups[$targetKey] ??= [];
+            $groups[$targetKey][] = $item;
+        }
+
+        if (count($groups) > 1) {
+            $runs = [];
+            $batchId = (string) Str::uuid();
+
+            foreach ($groups as $items) {
+                $mainParsed = $this->resolveMainParsedFromInstagramItems($items);
+                if (! $mainParsed || count($mainParsed['ip_events'] ?? []) === 0) {
+                    continue;
+                }
+
+                $ipsMap = $this->extractIpsMapFromInstagramParsed($mainParsed);
+                if (count($ipsMap) === 0) {
+                    continue;
+                }
+
+                $runs[] = $this->createInstagramRun($investigation, $mainParsed, $ipsMap, $batchId);
+            }
+
+            if (count($runs) === 0) {
+                Notification::make()->title('Nenhum IP encontrado no HTML')->warning()->send();
+                return;
+            }
+
+            $runIds = array_map(fn (AnaliseRun $run): int => (int) $run->id, $runs);
+            foreach ($runs as $run) {
+                $payload = $run->report ?: [];
+                $payload['_batch_run_ids'] = $runIds;
+                $run->report = $payload;
+                $run->save();
+            }
+
+            $this->investigationId = $investigation->id;
+            $this->investigation = [
+                'id' => $investigation->id,
+                'name' => $investigation->name,
+                'source' => $investigation->source,
+                'platform_label' => 'Instagram',
+            ];
+            $this->runId = $runs[0]->id;
+            $this->selectedTargetRunId = $runs[0]->id;
+            $this->targetRuns = $this->formatTargetRuns(
+                AnaliseRun::query()->where('investigation_id', $investigation->id)->orderBy('id')->get()->all(),
+            );
+            $this->running = true;
+
+            Notification::make()
+                ->title('Processamento iniciado para ' . count($runs) . ' alvos')
+                ->success()
+                ->send();
+
+            return;
+        }
+
         $mainParsed = null;
         $maxIps = -1;
 
@@ -190,14 +314,7 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
             return;
         }
 
-        $run = DB::transaction(function () use ($mainParsed, $ipsMap) {
-            $investigation = AnaliseInvestigation::create([
-                'user_id' => auth()->id(),
-                'uuid' => (string) Str::uuid(),
-                'name' => $this->instagramInvestigationName($mainParsed),
-                'source' => 'instagram',
-            ]);
-
+        $run = DB::transaction(function () use ($mainParsed, $ipsMap, $investigation) {
             $run = AnaliseRun::create([
                 'user_id' => auth()->id(),
                 'investigation_id' => $investigation->id,
@@ -228,7 +345,16 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
             return $run;
         });
 
+        $this->investigationId = $investigation->id;
+        $this->investigation = [
+            'id' => $investigation->id,
+            'name' => $investigation->name,
+            'source' => $investigation->source,
+            'platform_label' => 'Instagram',
+        ];
         $this->runId = $run->id;
+        $this->selectedTargetRunId = $run->id;
+        $this->targetRuns = $this->formatTargetRuns([$run]);
         $this->running = true;
 
         Notification::make()->title('Processamento iniciado')->success()->send();
@@ -249,9 +375,215 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
         return 'Investigação Instagram';
     }
 
+    protected function resolveMainParsedFromInstagramItems(array $items): ?array
+    {
+        $mainParsed = null;
+        $maxIps = -1;
+
+        foreach ($items as $item) {
+            $p = (array) ($item['parsed'] ?? []);
+            $n = count($p['ip_events'] ?? []);
+            if ($n > $maxIps) {
+                $maxIps = $n;
+                $mainParsed = $p;
+            }
+        }
+
+        return $mainParsed;
+    }
+
+    protected function extractIpsMapFromInstagramParsed(array $parsed): array
+    {
+        $ipsMap = [];
+
+        foreach (($parsed['ip_events'] ?? []) as $event) {
+            $ip = trim((string) ($event['ip'] ?? ''));
+            if ($ip === '') {
+                continue;
+            }
+
+            $time = $event['time_utc'] ?? null;
+            $ts = null;
+
+            if ($time instanceof Carbon) {
+                $ts = $time->timestamp;
+            } elseif (is_string($time) && trim($time) !== '') {
+                $ts = strtotime($time) ?: null;
+            } elseif (is_int($time)) {
+                $ts = $time;
+            }
+
+            $ipsMap[$ip] ??= ['occurrences' => 0, 'last_seen_ts' => $ts];
+            $ipsMap[$ip]['occurrences']++;
+
+            if ($ts && ($ipsMap[$ip]['last_seen_ts'] === null || $ts > $ipsMap[$ip]['last_seen_ts'])) {
+                $ipsMap[$ip]['last_seen_ts'] = $ts;
+            }
+        }
+
+        return $ipsMap;
+    }
+
+    protected function createInstagramRun(AnaliseInvestigation $investigation, array $parsed, array $ipsMap, string $batchId): AnaliseRun
+    {
+        return DB::transaction(function () use ($investigation, $parsed, $ipsMap, $batchId) {
+            $run = AnaliseRun::create([
+                'user_id' => auth()->id(),
+                'investigation_id' => $investigation->id,
+                'uuid' => (string) Str::uuid(),
+                'target' => $parsed['target'] ?? null,
+                'total_unique_ips' => count($ipsMap),
+                'processed_unique_ips' => 0,
+                'progress' => 0,
+                'status' => 'running',
+                'report' => [
+                    '_source' => 'instagram',
+                    '_batch_id' => $batchId,
+                    '_parsed' => $parsed,
+                ],
+            ]);
+
+            foreach ($ipsMap as $ip => $meta) {
+                AnaliseRunIp::create([
+                    'analise_run_id' => $run->id,
+                    'ip' => $ip,
+                    'occurrences' => (int) $meta['occurrences'],
+                    'last_seen_at' => $meta['last_seen_ts']
+                        ? now()->setTimestamp((int) $meta['last_seen_ts'])
+                        : null,
+                    'enriched' => false,
+                ]);
+            }
+
+            return $run;
+        });
+    }
+
+    protected function normalizeInstagramTarget(?string $value): ?string
+    {
+        $value = trim((string) $value);
+        if ($value === '') {
+            return null;
+        }
+
+        return mb_strtolower(preg_replace('/\s+/u', ' ', $value) ?? $value);
+    }
+
+    protected function resolveInvestigationForUpload(array $state): ?AnaliseInvestigation
+    {
+        if ($this->investigationId) {
+            $investigation = AnaliseInvestigation::query()
+                ->whereKey($this->investigationId)
+                ->where('user_id', auth()->id())
+                ->first();
+
+            if (! $investigation) {
+                Notification::make()->title('Investigacao nao encontrada')->danger()->send();
+                return null;
+            }
+
+            if ($investigation->source !== 'instagram') {
+                Notification::make()->title('Esta investigacao pertence a outra plataforma')->danger()->send();
+                return null;
+            }
+
+            return $investigation;
+        }
+
+        $name = trim((string) ($state['investigation_name'] ?? ''));
+        if ($name === '') {
+            Notification::make()->title('Informe o nome da investigacao')->danger()->send();
+            return null;
+        }
+
+        return AnaliseInvestigation::create([
+            'user_id' => auth()->id(),
+            'uuid' => (string) Str::uuid(),
+            'name' => $name,
+            'source' => 'instagram',
+        ]);
+    }
+
+    protected function formatTargetRuns(array $runs): array
+    {
+        return array_values(array_map(function (AnaliseRun $run): array {
+            return [
+                'id' => (int) $run->id,
+                'target' => $run->target ?: (data_get($run->report, '_parsed.target') ?: data_get($run->report, '_parsed.account_identifier') ?: 'Alvo nao identificado'),
+                'status' => (string) $run->status,
+                'progress' => (int) $run->progress,
+            ];
+        }, $runs));
+    }
+
     public function poll(): void
     {
         if ($this->selectedProvider !== null) return;
+        if ($this->investigationId || $this->runId) {
+            $runs = AnaliseRun::query()
+                ->when($this->investigationId, fn ($query) => $query->where('investigation_id', $this->investigationId))
+                ->when(! $this->investigationId && $this->runId, fn ($query) => $query->whereKey($this->runId))
+                ->orderBy('id')
+                ->get();
+
+            if ($runs->isEmpty()) {
+                if ($this->running && $this->investigationId) {
+                    $this->progress = 0;
+                    return;
+                }
+
+                $this->running = false;
+                $this->progress = 0;
+                return;
+            }
+
+            $this->targetRuns = $this->formatTargetRuns($runs->all());
+            $this->running = $runs->contains(fn (AnaliseRun $item): bool => in_array((string) $item->status, ['queued', 'running'], true));
+            $this->progress = (int) floor($runs->avg('progress') ?? 0);
+
+            $selected = $runs->firstWhere('id', $this->selectedTargetRunId ?: $this->runId) ?: $runs->first();
+            if ($selected) {
+                $this->runId = (int) $selected->id;
+                $this->selectedTargetRunId = (int) $selected->id;
+
+                if ($selected->status === 'done' && ($this->report === null || (int) $this->runId !== (int) $selected->id)) {
+                    $this->hydrateReportFromRun($selected, $this->tab ?: 'timeline');
+                }
+            }
+
+            return;
+        }
+
+        if ($this->investigationId) {
+            $runs = AnaliseRun::query()
+                ->where('investigation_id', $this->investigationId)
+                ->orderBy('id')
+                ->get();
+
+            foreach ($runs as $item) {
+                if ($item->status === 'running') {
+                    app(RunStepper::class)->step($item, $this->chunkSize, 0.0);
+                }
+            }
+
+            $runs = AnaliseRun::query()
+                ->where('investigation_id', $this->investigationId)
+                ->orderBy('id')
+                ->get();
+
+            $this->targetRuns = $this->formatTargetRuns($runs->all());
+            $this->running = $runs->contains(fn (AnaliseRun $item): bool => $item->status === 'running');
+            $this->progress = (int) floor($runs->avg('progress') ?? 0);
+
+            $selected = AnaliseRun::find($this->selectedTargetRunId ?: $this->runId);
+            if ($selected && $selected->status === 'done' && $this->report === null) {
+                $this->hydrateReportFromRun($selected, 'timeline');
+                Notification::make()->title('Relatorio pronto')->success()->send();
+            }
+
+            return;
+        }
+
         if (! $this->runId) return;
 
         $run = AnaliseRun::find($this->runId);
@@ -292,6 +624,28 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
         }
     }
 
+    public function selectTargetRun(int $runId): void
+    {
+        $run = AnaliseRun::query()
+            ->whereKey($runId)
+            ->when($this->investigationId, fn ($query) => $query->where('investigation_id', $this->investigationId))
+            ->first();
+
+        if (! $run) {
+            return;
+        }
+
+        $this->runId = $run->id;
+        $this->selectedTargetRunId = $run->id;
+        $this->progress = (int) $run->progress;
+        $this->report = null;
+        $this->tab = 'timeline';
+
+        if ($run->status === 'done') {
+            $this->hydrateReportFromRun($run, 'timeline');
+        }
+    }
+
     public function limpar(): void
     {
         if ($this->running) return;
@@ -310,6 +664,61 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
         $this->form->fill();
     }
 
+    protected function loadExistingInvestigation(int $investigationId): void
+    {
+        $investigation = AnaliseInvestigation::query()
+            ->whereKey($investigationId)
+            ->first();
+
+        if (! $investigation || ! $this->canViewInvestigation($investigation)) {
+            Notification::make()->title('Investigacao nao encontrada')->danger()->send();
+            return;
+        }
+
+        if ($investigation->source !== 'instagram') {
+            Notification::make()->title('Esta investigacao pertence a outra plataforma')->danger()->send();
+            return;
+        }
+
+        $runs = AnaliseRun::query()
+            ->where('investigation_id', $investigation->id)
+            ->orderBy('id')
+            ->get();
+
+        $this->investigationId = $investigation->id;
+        $this->investigation = [
+            'id' => $investigation->id,
+            'name' => $investigation->name,
+            'source' => $investigation->source,
+            'platform_label' => 'Instagram',
+        ];
+        $this->targetRuns = $this->formatTargetRuns($runs->all());
+        $this->running = $runs->contains(fn (AnaliseRun $run): bool => in_array((string) $run->status, ['queued', 'running'], true));
+        $this->progress = (int) floor($runs->avg('progress') ?? 0);
+
+        $first = $runs->first();
+        if ($first) {
+            $this->runId = $first->id;
+            $this->selectedTargetRunId = $first->id;
+
+            if ($first->status === 'done') {
+                $this->tab = 'timeline';
+                $this->hydrateReportFromRun($first, 'timeline');
+            }
+        }
+    }
+
+    protected function canViewInvestigation(AnaliseInvestigation $investigation): bool
+    {
+        if ((int) $investigation->user_id === (int) auth()->id()) {
+            return true;
+        }
+
+        return method_exists(RelatoriosProcessados::class, 'canAccess')
+            ? (bool) RelatoriosProcessados::canAccess()
+            : false;
+    }
+
     protected function loadExistingRun(int $runId): void
     {
         $run = AnaliseRun::find($runId);
@@ -320,8 +729,27 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
         }
 
         $this->runId = $run->id;
+        $this->selectedTargetRunId = $run->id;
+        if ($run->investigation_id) {
+            $this->investigationId = (int) $run->investigation_id;
+            $investigation = AnaliseInvestigation::find($run->investigation_id);
+            if ($investigation) {
+                $this->investigation = [
+                    'id' => $investigation->id,
+                    'name' => $investigation->name,
+                    'source' => $investigation->source,
+                    'platform_label' => 'Instagram',
+                ];
+            }
+
+            $this->targetRuns = $this->formatTargetRuns(
+                AnaliseRun::query()->where('investigation_id', $run->investigation_id)->orderBy('id')->get()->all(),
+            );
+        } else {
+            $this->targetRuns = $this->formatTargetRuns([$run]);
+        }
         $this->progress = (int) $run->progress;
-        $this->running = ($run->status === 'running');
+        $this->running = in_array((string) $run->status, ['queued', 'running'], true);
 
         if ($run->status === 'done') {
             $this->tab = 'timeline';
@@ -346,7 +774,7 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
 
     protected function buildReportFromRun(AnaliseRun $run): ?array
     {
-        $parsed = $run->report['_parsed'] ?? null;
+        $parsed = app(RunPayloadStorage::class)->loadParsedPayload($run);
 
         if (! is_array($parsed)) {
             Notification::make()->title('Sem dados para montar relatório')->danger()->send();

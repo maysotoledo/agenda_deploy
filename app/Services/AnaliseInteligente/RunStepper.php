@@ -10,15 +10,11 @@ use Illuminate\Support\Facades\Log;
 
 class RunStepper
 {
-    /**
-     * Processa um "chunk" de IPs por chamada (poll).
-     * $sleepSeconds fica opcional — evite sleeps longos em request web.
-     */
     public function step(AnaliseRun $run, int $chunkSize = 5, float $sleepSeconds = 0.0): void
     {
-        $deadline = microtime(true) + 12.0;
+        $deadline = microtime(true) + 5.0;
+        @set_time_limit(20);
 
-        // evita rodar em run finalizado
         if (($run->status ?? null) !== 'running') {
             return;
         }
@@ -29,17 +25,14 @@ class RunStepper
             return;
         }
 
-        // pega pendentes
         $ips = AnaliseRunIp::query()
             ->where('analise_run_id', $run->id)
-            ->where(function ($q) {
-                // compatível com boolean e/ou null
-                $q->where('enriched', false)->orWhereNull('enriched');
+            ->where(function ($query): void {
+                $query->where('enriched', false)->orWhereNull('enriched');
             })
-            ->limit(max(1, min($chunkSize, 3)))
+            ->limit(1)
             ->get();
 
-        // se não tem mais pendente => finaliza
         if ($ips->count() === 0) {
             $this->finishRun($run);
             return;
@@ -55,37 +48,31 @@ class RunStepper
             try {
                 $this->processIpRow($row);
             } catch (\Throwable $e) {
-                // NUNCA deixar travar o poll.
                 Log::warning('RunStepper: erro ao processar IP', [
                     'run_id' => $run->id,
                     'ip' => $row->ip ?? null,
                     'error' => $e->getMessage(),
                 ]);
 
-                // marca como "processado" mesmo assim, para não ficar preso eternamente
                 $row->enriched = true;
                 $row->save();
             }
 
             $processedNow++;
 
-            if ($sleepSeconds > 0) {
+            if ($sleepSeconds > 0 && microtime(true) < $deadline) {
                 usleep((int) round($sleepSeconds * 1_000_000));
             }
         }
 
-        // atualiza contadores e progresso
         $run->refresh();
 
         $already = (int) ($run->processed_unique_ips ?? 0);
-        $newProcessed = $already + $processedNow;
-
-        if ($newProcessed > $total) $newProcessed = $total;
+        $newProcessed = min($total, $already + $processedNow);
 
         $run->processed_unique_ips = $newProcessed;
         $run->progress = (int) floor(($newProcessed / $total) * 100);
 
-        // se chegou no fim, finaliza
         if ($newProcessed >= $total) {
             $this->finishRun($run);
         } else {
@@ -103,29 +90,27 @@ class RunStepper
             return;
         }
 
-        // tenta reutilizar enrichment existente
         $existing = IpEnrichment::query()->where('ip', $ip)->first();
-        if ($existing) {
+        if ($existing && $this->hasProviderData($existing)) {
             $row->enriched = true;
             $row->save();
             return;
         }
 
-        // ✅ Enrichment via HTTP (não pode travar)
         $data = $this->fetchEnrichment($ip);
-
-        // fallback seguro
-        $payload = [
-            'ip' => $ip,
-            'city' => $data['city'] ?? null,
-            'isp' => $data['isp'] ?? null,
-            'org' => $data['org'] ?? null,
-            'mobile' => (bool) ($data['mobile'] ?? false),
-        ];
 
         IpEnrichment::updateOrCreate(
             ['ip' => $ip],
-            $payload,
+            [
+                'ip' => $ip,
+                'city' => $data['city'] ?? null,
+                'isp' => $data['isp'] ?? null,
+                'org' => $data['org'] ?? null,
+                'mobile' => (bool) ($data['mobile'] ?? false),
+                'status' => $data['status'] ?? 'success',
+                'message' => $data['message'] ?? null,
+                'fetched_at' => now(),
+            ],
         );
 
         $row->enriched = true;
@@ -134,37 +119,202 @@ class RunStepper
 
     private function fetchEnrichment(string $ip): array
     {
-        // Exemplo usando ip-api.com (se você usa outro provedor, troque aqui)
-        // Importante: timeout curto + tratamento de erro
+        if (! $this->isPublicIp($ip)) {
+            return [
+                'status' => 'fail',
+                'message' => 'IP privado, reservado ou invalido para enriquecimento publico',
+            ];
+        }
+
+        foreach ([
+            fn (): array => $this->fetchFromIpApi($ip),
+            fn (): array => $this->fetchFromIpWhoIs($ip),
+            fn (): array => $this->fetchFromIpApiCo($ip),
+            fn (): array => $this->fetchFromIpInfo($ip),
+        ] as $fetcher) {
+            $data = $fetcher();
+
+            if ($this->hasProviderPayload($data)) {
+                return $this->normalizeProviderPayload($data);
+            }
+        }
+
+        return [
+            'status' => 'fail',
+            'message' => 'Nao foi possivel identificar provedor nos servicos consultados',
+        ];
+    }
+
+    private function fetchFromIpApi(string $ip): array
+    {
         try {
-            $resp = Http::connectTimeout(1)
-                ->timeout(2)
+            $response = Http::connectTimeout(0.5)
+                ->timeout(1)
                 ->get('http://ip-api.com/json/' . $ip, [
                     'fields' => 'status,message,city,isp,org,mobile',
                 ]);
 
-            if (! $resp->successful()) {
+            if (! $response->successful()) {
                 return [];
             }
 
-            $json = $resp->json();
-            if (! is_array($json)) return [];
-
-            if (($json['status'] ?? null) !== 'success') {
+            $json = $response->json();
+            if (! is_array($json) || ($json['status'] ?? null) !== 'success') {
                 return [];
             }
 
-            return $json;
+            return [
+                'city' => $json['city'] ?? null,
+                'isp' => $json['isp'] ?? null,
+                'org' => $json['org'] ?? null,
+                'mobile' => $json['mobile'] ?? false,
+                'status' => 'success',
+                'message' => 'ip-api',
+            ];
         } catch (\Throwable) {
             return [];
         }
+    }
+
+    private function fetchFromIpWhoIs(string $ip): array
+    {
+        try {
+            $response = Http::connectTimeout(0.5)
+                ->timeout(1)
+                ->get('https://ipwho.is/' . $ip, [
+                    'fields' => 'success,message,city,connection,type',
+                ]);
+
+            if (! $response->successful()) {
+                return [];
+            }
+
+            $json = $response->json();
+            if (! is_array($json) || ($json['success'] ?? false) !== true) {
+                return [];
+            }
+
+            $connection = is_array($json['connection'] ?? null) ? $json['connection'] : [];
+
+            return [
+                'city' => $json['city'] ?? null,
+                'isp' => $connection['isp'] ?? null,
+                'org' => $connection['org'] ?? null,
+                'mobile' => str_contains(strtolower((string) ($json['type'] ?? '')), 'mobile'),
+                'status' => 'success',
+                'message' => 'ipwho.is',
+            ];
+        } catch (\Throwable) {
+            return [];
+        }
+    }
+
+    private function fetchFromIpApiCo(string $ip): array
+    {
+        try {
+            $response = Http::connectTimeout(0.5)
+                ->timeout(1)
+                ->get('https://ipapi.co/' . $ip . '/json/');
+
+            if (! $response->successful()) {
+                return [];
+            }
+
+            $json = $response->json();
+            if (! is_array($json) || isset($json['error'])) {
+                return [];
+            }
+
+            return [
+                'city' => $json['city'] ?? null,
+                'isp' => $json['org'] ?? null,
+                'org' => $json['org'] ?? null,
+                'mobile' => false,
+                'status' => 'success',
+                'message' => 'ipapi.co',
+            ];
+        } catch (\Throwable) {
+            return [];
+        }
+    }
+
+    private function fetchFromIpInfo(string $ip): array
+    {
+        try {
+            $response = Http::connectTimeout(0.5)
+                ->timeout(1)
+                ->get('https://ipinfo.io/' . $ip . '/json');
+
+            if (! $response->successful()) {
+                return [];
+            }
+
+            $json = $response->json();
+            if (! is_array($json) || isset($json['bogon'])) {
+                return [];
+            }
+
+            return [
+                'city' => $json['city'] ?? null,
+                'isp' => $json['org'] ?? null,
+                'org' => $json['org'] ?? null,
+                'mobile' => false,
+                'status' => 'success',
+                'message' => 'ipinfo.io',
+            ];
+        } catch (\Throwable) {
+            return [];
+        }
+    }
+
+    private function hasProviderData(IpEnrichment $enrichment): bool
+    {
+        return trim((string) ($enrichment->isp ?? '')) !== ''
+            || trim((string) ($enrichment->org ?? '')) !== '';
+    }
+
+    private function hasProviderPayload(array $data): bool
+    {
+        return trim((string) ($data['isp'] ?? '')) !== ''
+            || trim((string) ($data['org'] ?? '')) !== '';
+    }
+
+    private function normalizeProviderPayload(array $data): array
+    {
+        $isp = trim((string) ($data['isp'] ?? ''));
+        $org = trim((string) ($data['org'] ?? ''));
+
+        if ($isp === '' && $org !== '') {
+            $isp = $org;
+        }
+
+        if ($org === '' && $isp !== '') {
+            $org = $isp;
+        }
+
+        return [
+            'city' => trim((string) ($data['city'] ?? '')) ?: null,
+            'isp' => $isp ?: null,
+            'org' => $org ?: null,
+            'mobile' => (bool) ($data['mobile'] ?? false),
+            'status' => $data['status'] ?? 'success',
+            'message' => $data['message'] ?? null,
+        ];
+    }
+
+    private function isPublicIp(string $ip): bool
+    {
+        return (bool) filter_var(
+            $ip,
+            FILTER_VALIDATE_IP,
+            FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE,
+        );
     }
 
     private function finishRun(AnaliseRun $run): void
     {
         $total = (int) ($run->total_unique_ips ?? 0);
 
-        // garante progresso coerente
         $run->processed_unique_ips = $total;
         $run->progress = 100;
         $run->status = 'done';

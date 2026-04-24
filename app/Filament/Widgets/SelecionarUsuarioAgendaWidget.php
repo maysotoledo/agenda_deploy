@@ -17,9 +17,18 @@ class SelecionarUsuarioAgendaWidget extends Widget implements Forms\Contracts\Ha
 
     public ?int $agendaUserId = null;
 
-    public bool $hasEpcUsers = false;
+    public bool $hasAgendaUsers = false;
 
-    public bool $hasSingleEpcUser = false;
+    public bool $hasSingleAgendaUser = false;
+
+    protected function agendaSelectableUsersQuery()
+    {
+        return User::query()
+            ->where(function ($query) {
+                $query->role('epc')
+                    ->orWhere(fn ($roleQuery) => $roleQuery->role('cartorio_central'));
+            });
+    }
 
     public static function canView(): bool
     {
@@ -30,15 +39,15 @@ class SelecionarUsuarioAgendaWidget extends Widget implements Forms\Contracts\Ha
 
     public function mount(): void
     {
-        $epcCount = User::query()->role('epc')->count();
+        $currentUser = auth()->user();
+        $agendaCount = $this->agendaSelectableUsersQuery()->count();
 
-        $this->hasEpcUsers = $epcCount > 0;
-        $this->hasSingleEpcUser = $epcCount === 1;
+        $this->hasAgendaUsers = $agendaCount > 0;
+        $this->hasSingleAgendaUser = $agendaCount === 1;
 
-        if (! $this->hasEpcUsers) {
+        if (! $this->hasAgendaUsers) {
             session()->forget('agenda_user_id');
             $this->agendaUserId = null;
-
             $this->form->fill(['agendaUserId' => null]);
 
             return;
@@ -46,21 +55,22 @@ class SelecionarUsuarioAgendaWidget extends Widget implements Forms\Contracts\Ha
 
         $sessionUserId = session('agenda_user_id');
 
-        $validSessionUserId = User::query()
-            ->role('epc')
+        $validSessionUserId = $this->agendaSelectableUsersQuery()
             ->whereKey($sessionUserId)
             ->value('id');
 
         if ($validSessionUserId) {
             $this->agendaUserId = (int) $validSessionUserId;
+        } elseif ($currentUser?->hasRole('cartorio_central')) {
+            $this->agendaUserId = (int) $currentUser->getKey();
+            session(['agenda_user_id' => $this->agendaUserId]);
+            $this->dispatch('agendaUserSelected', userId: $this->agendaUserId);
         } else {
-            // auto seleciona primeiro EPC (por nome)
-            $firstEpcId = (int) User::query()
-                ->role('epc')
+            $firstAgendaUserId = (int) $this->agendaSelectableUsersQuery()
                 ->orderBy('name')
                 ->value('id');
 
-            $this->agendaUserId = $firstEpcId ?: null;
+            $this->agendaUserId = $firstAgendaUserId ?: null;
 
             if ($this->agendaUserId) {
                 session(['agenda_user_id' => $this->agendaUserId]);
@@ -76,31 +86,41 @@ class SelecionarUsuarioAgendaWidget extends Widget implements Forms\Contracts\Ha
     public function form(Schema $form): Schema
     {
         return $form->schema([
-            Forms\Components\Placeholder::make('no_epc_users')
+            Forms\Components\Placeholder::make('no_agenda_users')
                 ->label('')
-                ->content('Nenhum usuário com a role "epc" foi encontrado.')
-                ->visible(fn (): bool => ! $this->hasEpcUsers),
+                ->content('Nenhuma agenda de EPC ou Cartorio Central foi encontrada.')
+                ->visible(fn (): bool => ! $this->hasAgendaUsers),
 
-            Forms\Components\Placeholder::make('single_epc_info')
+            Forms\Components\Placeholder::make('single_agenda_info')
                 ->label('')
-                ->content('Existe apenas 1 usuário EPC. A agenda foi selecionada automaticamente.')
-                ->visible(fn (): bool => $this->hasSingleEpcUser),
+                ->content('Existe apenas 1 agenda disponivel. Ela foi selecionada automaticamente.')
+                ->visible(fn (): bool => $this->hasSingleAgendaUser),
 
             Forms\Components\Select::make('agendaUserId')
-                ->label('Selecionar usuário (EPC)')
-                ->options(fn () => User::query()
-                    ->role('epc')
+                ->label('Selecionar agenda')
+                ->options(fn () => $this->agendaSelectableUsersQuery()
                     ->orderBy('name')
-                    ->pluck('name', 'id')
+                    ->get()
+                    ->mapWithKeys(function (User $user): array {
+                        $label = $user->name;
+
+                        if ($user->hasRole('cartorio_central')) {
+                            $label .= ' (Cartorio Central)';
+                        } elseif ($user->hasRole('epc')) {
+                            $label .= ' (EPC)';
+                        }
+
+                        return [$user->id => $label];
+                    })
                     ->all()
                 )
                 ->searchable()
                 ->preload()
                 ->live()
                 ->selectablePlaceholder(false)
-                ->visible(fn (): bool => $this->hasEpcUsers)
-                ->disabled(fn (): bool => $this->hasSingleEpcUser)
-                ->required(fn (): bool => $this->hasEpcUsers && ! $this->hasSingleEpcUser)
+                ->visible(fn (): bool => $this->hasAgendaUsers)
+                ->disabled(fn (): bool => $this->hasSingleAgendaUser)
+                ->required(fn (): bool => $this->hasAgendaUsers && ! $this->hasSingleAgendaUser)
                 ->afterStateUpdated(function (?int $state) {
                     $previous = $this->agendaUserId;
 
@@ -108,15 +128,17 @@ class SelecionarUsuarioAgendaWidget extends Widget implements Forms\Contracts\Ha
                         if ($previous) {
                             $this->form->fill(['agendaUserId' => $previous]);
                         }
+
                         return;
                     }
 
-                    $isEpc = User::query()->role('epc')->whereKey($state)->exists();
+                    $isSelectableAgenda = $this->agendaSelectableUsersQuery()->whereKey($state)->exists();
 
-                    if (! $isEpc) {
+                    if (! $isSelectableAgenda) {
                         if ($previous) {
                             $this->form->fill(['agendaUserId' => $previous]);
                         }
+
                         return;
                     }
 

@@ -28,7 +28,7 @@
         </div>
     </form>
 
-    @if ($runId)
+    @if ($runId || $investigationId)
         <x-filament::section class="mt-6" heading="Progresso">
             <div class="space-y-3"
                 @if($running && empty($selectedContactType) && empty($selectedProvider) && empty($vinculoModalIp))
@@ -36,7 +36,11 @@
                 @endif
             >
                 <div class="text-sm text-gray-500">
-                    Run ID: <span class="font-mono">{{ $runId }}</span>
+                    @if ($runId)
+                        Run ID: <span class="font-mono">{{ $runId }}</span>
+                    @else
+                        Investigacao ID: <span class="font-mono">{{ $investigationId }}</span>
+                    @endif
                 </div>
 
                 <div class="w-full bg-gray-200 rounded h-3 overflow-hidden">
@@ -44,7 +48,16 @@
                 </div>
 
                 <div class="text-sm">
-                    {{ $progress }}% @if($running) (processando...) @else (finalizado) @endif
+                    {{ $progress }}%
+                    @if($running)
+                        @if(empty($targetRuns))
+                            (preparando alvo e consolidando arquivos...)
+                        @else
+                            (processando...)
+                        @endif
+                    @else
+                        (finalizado)
+                    @endif
                 </div>
             </div>
         </x-filament::section>

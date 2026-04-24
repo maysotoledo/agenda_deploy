@@ -2,13 +2,14 @@
 
 namespace App\Filament\Pages;
 
+use App\Filament\Pages\RelatoriosProcessados;
+use App\Jobs\AnaliseInteligente\Whatsapp\ProcessWhatsappTargetGroupJob;
 use App\Models\AnaliseRun;
 use App\Models\AnaliseRunContact;
 use App\Models\AnaliseRunIp;
 use App\Models\AnaliseInvestigation;
 use App\Models\Bilhetagem;
 use App\Models\IpEnrichment;
-use App\Services\AnaliseInteligente\RunStepper;
 use App\Services\AnaliseInteligente\Whatsapp\RecordsHtmlParser;
 use App\Services\AnaliseInteligente\Whatsapp\ReportAggregator;
 use BezhanSalleh\FilamentShield\Traits\HasPageShield;
@@ -79,7 +80,7 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
     public array $vinculoModalTimes = [];
     public int $vinculoPage = 1;
     public int $vinculoPerPage = 10;
-    public array $pendingUploadGroups = [];
+    public ?string $pendingUploadCacheKey = null;
     public array $pendingDuplicateTargetKeys = [];
     public array $pendingDuplicateTargetLabels = [];
 
@@ -137,8 +138,7 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
                         '.htm',
                         '.zip',
                     ])
-                    ->preserveFilenames()
-                    ->maxSize(20_000),
+                    ->preserveFilenames(),
             ])
             ->statePath('data');
     }
@@ -167,7 +167,7 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
 
         $state = $this->form->getState();
         $investigation = $this->resolveInvestigationForUpload($state);
-        if (! $investigation) {
+        if (! $investigation || ! $this->canViewInvestigation($investigation)) {
             return;
         }
 
@@ -250,7 +250,7 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
 
         $duplicateTargets = $this->findDuplicateTargetsForInvestigation($investigation, $groupsWithIpLog);
         if (count($duplicateTargets) > 0) {
-            $this->pendingUploadGroups = $groups;
+            $this->pendingUploadCacheKey = $this->storePendingUploadGroups($groups);
             $this->pendingDuplicateTargetKeys = array_keys($duplicateTargets);
             $this->pendingDuplicateTargetLabels = array_values($duplicateTargets);
             $this->mountAction('confirmRemoveDuplicateTargets');
@@ -263,28 +263,31 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
     protected function processUploadGroups(AnaliseInvestigation $investigation, array $groups, array $groupsWithIpLog): void
     {
         $batchId = (string) Str::uuid();
-        $runs = [];
 
         foreach ($groupsWithIpLog as $items) {
-            $runs[] = $this->createRunForTargetGroup($items, $batchId, $investigation);
+            $storedPaths = array_values(array_filter(array_map(
+                fn (array $item): ?string => is_string($item['stored_path'] ?? null) ? $item['stored_path'] : null,
+                $items,
+            )));
+
+            if (count($storedPaths) === 0) {
+                continue;
+            }
+
+            ProcessWhatsappTargetGroupJob::dispatch(
+                investigationId: $investigation->id,
+                userId: (int) auth()->id(),
+                storedPaths: $storedPaths,
+                batchId: $batchId,
+            );
         }
 
         $this->importBilhetagemOnlyGroupsIntoInvestigation($investigation, array_diff_key($groups, $groupsWithIpLog));
 
-        $runIds = array_map(fn (AnaliseRun $run) => $run->id, $runs);
-
-        foreach ($runs as $run) {
-            $payload = $run->report ?: [];
-            $payload['_batch_id'] = $batchId;
-            $payload['_batch_run_ids'] = $runIds;
-            $run->report = $payload;
-            $run->save();
-        }
-
         $allInvestigationRuns = AnaliseRun::query()
             ->where('investigation_id', $investigation->id)
             ->orderBy('id')
-            ->get()
+            ->get(['id', 'target', 'status', 'progress', 'total_unique_ips', 'created_at'])
             ->all();
 
         $this->targetRuns = $this->formatTargetRuns($allInvestigationRuns);
@@ -293,13 +296,14 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
             'id' => $investigation->id,
             'name' => $investigation->name,
         ];
-        $this->runId = $runs[0]->id;
-        $this->selectedTargetRunId = $runs[0]->id;
+        $this->runId = null;
+        $this->selectedTargetRunId = null;
         $this->progress = (int) floor(array_sum(array_column($this->targetRuns, 'progress')) / max(1, count($this->targetRuns)));
         $this->running = true;
 
         Notification::make()
-            ->title(count($runs) > 1 ? 'Processamento iniciado para ' . count($runs) . ' alvos' : 'Processamento iniciado')
+            ->title('Processamento enviado para a fila')
+            ->body('Os arquivos do WhatsApp foram enfileirados; a tela agora acompanha o progresso pelo banco.')
             ->success()
             ->send();
     }
@@ -307,14 +311,20 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
     public function confirmRemoveDuplicateTargets(): Action
     {
         return Action::make('confirmRemoveDuplicateTargets')
-            ->label('Remover alvos existentes')
+            ->label('Iniciar processamento')
             ->modalHeading('Remover alvos já existentes?')
             ->modalDescription(fn () => 'Os seguintes alvos já existem nesta investigação: ' . implode(', ', $this->pendingDuplicateTargetLabels))
             ->modalSubmitActionLabel('Sim')
+            ->modalHeading('A análise será processada sem incluir alvo já existente nesta investigação')
+            ->modalDescription(fn () => 'Alvos: ' . implode(', ', $this->pendingDuplicateTargetLabels))
+            ->modalSubmitActionLabel('OK')
+            ->modalCancelActionLabel('Cancelar')
             ->modalCancelActionLabel('Não')
             ->color('warning')
             ->action(function () {
-                if (! $this->investigationId || count($this->pendingUploadGroups) === 0) {
+                $pendingGroups = $this->pullPendingUploadGroups();
+
+                if (! $this->investigationId || count($pendingGroups) === 0) {
                     Notification::make()->title('Upload pendente não encontrado')->danger()->send();
                     return;
                 }
@@ -329,9 +339,9 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
                     return;
                 }
 
-                $groups = $this->removeExistingTargetGroups($investigation, $this->pendingUploadGroups);
+                $groups = $this->removeExistingTargetGroups($investigation, $pendingGroups);
 
-                $this->pendingUploadGroups = [];
+                $this->pendingUploadCacheKey = null;
                 $this->pendingDuplicateTargetKeys = [];
                 $this->pendingDuplicateTargetLabels = [];
 
@@ -347,6 +357,7 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
                 });
 
                 if (count($groupsWithIpLog) === 0) {
+                    $this->loadExistingInvestigation($investigation->id);
                     Notification::make()->title('Não há alvos novos para processar')->warning()->send();
                     return;
                 }
@@ -359,9 +370,9 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
     {
         $existing = AnaliseRun::query()
             ->where('investigation_id', $investigation->id)
-            ->get(['target', 'report'])
+            ->get(['target'])
             ->mapWithKeys(function (AnaliseRun $run): array {
-                $raw = $run->target ?: (data_get($run->report, '_parsed.target') ?: data_get($run->report, '_parsed.account_identifier'));
+                $raw = $run->target;
                 $key = $this->normalizeTargetForDuplicateCheck(is_string($raw) ? $raw : null);
 
                 return $key ? [$key => true] : [];
@@ -452,8 +463,14 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
             }
         }
 
+        $parsedForReport = $this->parsedForRunPayload($mainParsed);
+        $resolvedTarget = is_string($runTargetRaw) && trim($runTargetRaw) !== ''
+            ? trim($runTargetRaw)
+            : (is_string($mainParsed['target'] ?? null) ? trim((string) $mainParsed['target']) : null);
+
         return DB::transaction(function () use (
             $mainParsed,
+            $parsedForReport,
             $ipsMap,
             $connectionIpBase,
             $connectionLastSeenTs,
@@ -461,13 +478,17 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
             $runTargetRaw,
             $ignoredBilhetagens,
             $batchId,
-            $investigation
+            $investigation,
+            $resolvedTarget
         ) {
+            $runUuid = (string) Str::uuid();
+            $parsedPath = $this->storeParsedPayload($runUuid, $parsedForReport);
+
             $run = AnaliseRun::create([
                 'user_id' => auth()->id(),
                 'investigation_id' => $investigation->id,
-                'uuid' => (string) Str::uuid(),
-                'target' => $mainParsed['target'] ?? null,
+                'uuid' => $runUuid,
+                'target' => $resolvedTarget,
                 'total_unique_ips' => count($ipsMap) + ($connectionIpBase && ! isset($ipsMap[$connectionIpBase]) ? 1 : 0),
                 'processed_unique_ips' => 0,
                 'progress' => 0,
@@ -476,7 +497,7 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
                     '_source' => 'whatsapp',
                     '_batch_id' => $batchId,
                     '_target_thread_id' => (string) Str::uuid(),
-                    '_parsed' => $mainParsed,
+                    '_parsed_path' => $parsedPath,
                     '_warnings' => [
                         'ignored_bilhetagens' => $ignoredBilhetagens,
                     ],
@@ -547,6 +568,13 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
         });
     }
 
+    protected function parsedForRunPayload(array $parsed): array
+    {
+        $parsed['message_log'] = [];
+
+        return $parsed;
+    }
+
     protected function extractIpsMapFromParsed(array $parsed): array
     {
         $ipsMap = [];
@@ -580,7 +608,7 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
     // =========================================================
     public function poll(): void
     {
-        if (! $this->runId) return;
+        if (! $this->runId && ! $this->investigationId) return;
         if ($this->selectedContactType !== null) return;
         if ($this->selectedProvider !== null) return;
         if ($this->vinculoModalIp !== null) return;
@@ -596,6 +624,46 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
             return;
         }
 
+        $runs = AnaliseRun::query()
+            ->when($this->investigationId, fn ($query) => $query->where('investigation_id', $this->investigationId))
+            ->when(! $this->investigationId && $this->runId, fn ($query) => $query->whereKey($this->runId))
+            ->orderBy('id')
+            ->get(['id', 'investigation_id', 'target', 'status', 'progress', 'total_unique_ips', 'created_at']);
+
+        if ($runs->isEmpty()) {
+            if ($this->running && $this->investigationId) {
+                $this->progress = 0;
+                return;
+            }
+
+            $this->running = false;
+            $this->progress = 0;
+            return;
+        }
+
+        $this->targetRuns = $this->formatTargetRuns($runs->all());
+        $this->progress = (int) floor(array_sum(array_column($this->targetRuns, 'progress')) / max(1, count($this->targetRuns)));
+        $this->running = $runs->contains(fn (AnaliseRun $run) => in_array((string) $run->status, ['queued', 'running'], true));
+
+        $selectedId = $this->selectedTargetRunId ?: $this->runId ?: ($this->targetRuns[0]['id'] ?? null);
+        $selected = $this->loadRunLight($selectedId);
+        if ($selected && $selected->status === 'done' && ($this->report === null || $this->runId !== $selected->id)) {
+            $selectedRun = $this->loadRunForReport($selected->id);
+            if (! $selectedRun) {
+                return;
+            }
+
+            $this->runId = $selectedRun->id;
+            $this->selectedTargetRunId = $selectedRun->id;
+            $this->hydrateReportFromRun($selectedRun);
+            $this->tab = 'timeline';
+
+            $ignored = data_get($selectedRun->report, '_warnings.ignored_bilhetagens', []);
+            $this->runWarnings = is_array($ignored) ? $ignored : [];
+        }
+
+        return;
+
         $runIds = array_values(array_unique(array_filter(array_map(
             fn ($row) => (int) ($row['id'] ?? 0),
             $this->targetRuns
@@ -605,7 +673,9 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
             $runIds = [$this->runId];
         }
 
-        $runs = AnaliseRun::whereIn('id', $runIds)->get()->keyBy('id');
+        $runs = AnaliseRun::whereIn('id', $runIds)
+            ->get(['id', 'target', 'status', 'progress', 'total_unique_ips', 'created_at'])
+            ->keyBy('id');
         if ($runs->isEmpty()) return;
 
         $processedRuns = 0;
@@ -621,20 +691,26 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
             }
         }
 
-        $runs = AnaliseRun::whereIn('id', $runIds)->get();
+        $runs = AnaliseRun::whereIn('id', $runIds)
+            ->get(['id', 'target', 'status', 'progress', 'total_unique_ips', 'created_at']);
         $this->targetRuns = $this->formatTargetRuns($runs->all());
 
         $this->progress = (int) floor(array_sum(array_column($this->targetRuns, 'progress')) / max(1, count($this->targetRuns)));
-        $this->running = $runs->contains(fn (AnaliseRun $run) => $run->status === 'running');
+        $this->running = $runs->contains(fn (AnaliseRun $run) => in_array((string) $run->status, ['queued', 'running'], true));
 
-        $selected = AnaliseRun::find($this->selectedTargetRunId ?: $this->runId);
+        $selected = $this->loadRunLight($this->selectedTargetRunId ?: $this->runId);
         if ($selected && $selected->status === 'done' && ($this->report === null || $this->runId !== $selected->id)) {
-            $this->runId = $selected->id;
-            $this->selectedTargetRunId = $selected->id;
-            $this->hydrateReportFromRun($selected);
+            $selectedRun = $this->loadRunForReport($selected->id);
+            if (! $selectedRun) {
+                return;
+            }
+
+            $this->runId = $selectedRun->id;
+            $this->selectedTargetRunId = $selectedRun->id;
+            $this->hydrateReportFromRun($selectedRun);
             $this->tab = 'timeline';
 
-            $ignored = data_get($selected->report, '_warnings.ignored_bilhetagens', []);
+            $ignored = data_get($selectedRun->report, '_warnings.ignored_bilhetagens', []);
             $this->runWarnings = is_array($ignored) ? $ignored : [];
 
             if (is_array($ignored) && count($ignored) > 0) {
@@ -660,7 +736,7 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
 
     public function selectTargetReport(int $runId): void
     {
-        $run = AnaliseRun::find($runId);
+        $run = $this->loadRunLight($runId);
         if (! $run) {
             Notification::make()->title('Relatório do alvo não encontrado')->danger()->send();
             return;
@@ -670,7 +746,7 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
         $this->selectedTargetRunId = $run->id;
         $this->progress = (int) $run->progress;
         $this->tab = 'timeline';
-        $this->runWarnings = data_get($run->report, '_warnings.ignored_bilhetagens', []) ?: [];
+        $this->runWarnings = [];
 
         if ($run->status !== 'done') {
             $this->report = null;
@@ -678,7 +754,14 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
             return;
         }
 
-        $this->hydrateReportFromRun($run, 'timeline');
+        $fullRun = $this->loadRunForReport($run->id);
+        if (! $fullRun) {
+            Notification::make()->title('Relatório do alvo não encontrado')->danger()->send();
+            return;
+        }
+
+        $this->runWarnings = data_get($fullRun->report, '_warnings.ignored_bilhetagens', []) ?: [];
+        $this->hydrateReportFromRun($fullRun, 'timeline');
     }
 
     public function setTab(string $tab): void
@@ -696,7 +779,7 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
             return;
         }
 
-        $run = AnaliseRun::find($this->runId);
+        $run = $this->loadRunForReport($this->runId);
         if ($run && $run->status === 'done') {
             $this->hydrateReportFromRun($run, $tab);
         }
@@ -707,7 +790,7 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
         return array_values(array_map(function (AnaliseRun $run): array {
             return [
                 'id' => $run->id,
-                'target' => $run->target ?: (data_get($run->report, '_parsed.target') ?: data_get($run->report, '_parsed.account_identifier') ?: 'Alvo não identificado'),
+                'target' => $run->target ?: 'Alvo não identificado',
                 'status' => $run->status,
                 'progress' => (int) $run->progress,
                 'total_unique_ips' => (int) $run->total_unique_ips,
@@ -725,9 +808,9 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
     {
         $existing = AnaliseRun::query()
             ->where('investigation_id', $investigation->id)
-            ->get(['target', 'report'])
+            ->get(['target'])
             ->mapWithKeys(function (AnaliseRun $run): array {
-                $raw = $run->target ?: (data_get($run->report, '_parsed.target') ?: data_get($run->report, '_parsed.account_identifier'));
+                $raw = $run->target;
                 $key = $this->normalizeTargetForDuplicateCheck(is_string($raw) ? $raw : null);
 
                 return $key ? [$key => (string) $raw] : [];
@@ -756,11 +839,12 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
     {
         $runs = AnaliseRun::query()
             ->where('investigation_id', $investigation->id)
-            ->get();
+            ->get(['id', 'investigation_id', 'target'])
+            ;
 
         $runsByTarget = [];
         foreach ($runs as $run) {
-            $raw = $run->target ?: (data_get($run->report, '_parsed.target') ?: data_get($run->report, '_parsed.account_identifier'));
+            $raw = $run->target;
             $key = $this->normalizeTargetForDuplicateCheck(is_string($raw) ? $raw : null);
             if ($key) {
                 $runsByTarget[$key] = $run;
@@ -820,10 +904,7 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
         }
 
         $this->selectedContactType = $type;
-
-        $this->selectedContacts = $type === 'simetricos'
-            ? ($this->report['symmetric_contacts'] ?? [])
-            : ($this->report['asymmetric_contacts'] ?? []);
+        $this->selectedContacts = $this->loadContactsForType($type);
 
         $this->mountAction('contactsModal');
     }
@@ -886,7 +967,7 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
             return;
         }
 
-        $run = AnaliseRun::find($this->runId);
+        $run = $this->loadRunForReport($this->runId);
         if (! $run) {
             Notification::make()->title('Relatório não encontrado')->danger()->send();
             return;
@@ -953,10 +1034,34 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
 
         $this->contactNames = [];
         $this->selectedContactPhone = null;
+        $this->pendingUploadCacheKey = null;
+        $this->pendingDuplicateTargetKeys = [];
+        $this->pendingDuplicateTargetLabels = [];
 
         $this->resetBilhetagemModalState();
 
         $this->form->fill();
+    }
+
+    protected function storePendingUploadGroups(array $groups): string
+    {
+        $cacheKey = 'wpp-pending-upload:' . Str::uuid();
+        Cache::put($cacheKey, $groups, now()->addMinutes(30));
+
+        return $cacheKey;
+    }
+
+    protected function pullPendingUploadGroups(): array
+    {
+        $cacheKey = $this->pendingUploadCacheKey;
+        if (! is_string($cacheKey) || trim($cacheKey) === '') {
+            return [];
+        }
+
+        $groups = Cache::pull($cacheKey, []);
+        $this->pendingUploadCacheKey = null;
+
+        return is_array($groups) ? $groups : [];
     }
 
     // =========================================================
@@ -999,7 +1104,7 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
             return;
         }
 
-        $run = AnaliseRun::find($this->runId);
+        $run = $this->loadRunLight($this->runId);
         if (! $run) {
             Notification::make()->title('Run não encontrado.')->danger()->send();
             return;
@@ -1012,7 +1117,7 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
         }
 
         $disk = Storage::disk('public');
-        $runTargetRaw = $run->target ?: (data_get($run->report, '_parsed.target') ?: data_get($run->report, '_parsed.account_identifier'));
+        $runTargetRaw = $run->target;
 
         foreach ($storedPaths as $storedPath) {
             if (! $storedPath || ! $disk->exists($storedPath)) continue;
@@ -1052,7 +1157,10 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
         Cache::forget($this->reportCacheKey($run, 'bilhetagem'));
 
         $this->tab = 'bilhetagem';
-        $this->hydrateReportFromRun($run, 'bilhetagem');
+        $fullRun = $this->loadRunForReport($run->id);
+        if ($fullRun) {
+            $this->hydrateReportFromRun($fullRun, 'bilhetagem');
+        }
 
         Notification::make()
             ->title("Bilhetagem importada: {$inserted} registros novos")
@@ -1297,7 +1405,7 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
 
                     $this->loadContactNames($this->runId);
 
-                    $run = AnaliseRun::find($this->runId);
+                    $run = $this->loadRunForReport($this->runId);
                     if ($run) {
                         $this->tab = 'bilhetagem';
                         $this->hydrateReportFromRun($run, 'bilhetagem');
@@ -1319,7 +1427,7 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
 
                 $this->loadContactNames($this->runId);
 
-                $run = AnaliseRun::find($this->runId);
+                $run = $this->loadRunForReport($this->runId);
                 if ($run) {
                     $this->tab = 'bilhetagem';
                     $this->hydrateReportFromRun($run, 'bilhetagem');
@@ -1382,7 +1490,7 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
 
     protected function buildReportFromRun(AnaliseRun $run, string $activeTab): ?array
     {
-        $parsed = $run->report['_parsed'] ?? null;
+        $parsed = $this->loadParsedPayload($run);
         if (! is_array($parsed)) return null;
 
         $parsed['message_log'] = [];
@@ -1511,86 +1619,108 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
 
     protected function buildVinculoRows(AnaliseRun $currentRun): array
     {
-        $linkedRunIds = [];
-
-        if ($currentRun->investigation_id) {
-            $linkedRunIds = AnaliseRun::query()
-                ->where('investigation_id', $currentRun->investigation_id)
-                ->pluck('id')
-                ->all();
-        }
-
-        if (count($linkedRunIds) === 0) {
-            $batchRunIds = data_get($currentRun->report, '_batch_run_ids', []);
-            $linkedRunIds = is_array($batchRunIds) ? $batchRunIds : [];
-        }
-
-        if (count($linkedRunIds) === 0) {
-            $batchId = data_get($currentRun->report, '_batch_id');
-            $linkedRunIds = is_string($batchId) && $batchId !== ''
-                ? AnaliseRun::query()
-                    ->where('user_id', $currentRun->user_id)
-                    ->get(['id', 'report'])
-                    ->filter(fn (AnaliseRun $run): bool => data_get($run->report, '_batch_id') === $batchId)
-                    ->pluck('id')
-                    ->all()
-                : [$currentRun->id];
-        }
-
-        $linkedRunIds = array_values(array_unique(array_filter(array_map('intval', $linkedRunIds))));
-        if (count($linkedRunIds) < 2) {
+        if (! $currentRun->investigation_id) {
             return [];
         }
 
-        $runs = AnaliseRun::query()
-            ->whereIn('id', $linkedRunIds)
-            ->get()
-            ->keyBy('id');
+        $currentParsed = $this->loadParsedPayload($currentRun) ?? [];
+        if (! is_array($currentParsed)) {
+            return [];
+        }
+
+        $currentIps = $this->extractConnectionIpsForVinculo($currentParsed);
+        if (count($currentIps) === 0) {
+            return [];
+        }
+
+        $otherRuns = AnaliseRun::query()
+            ->where('investigation_id', $currentRun->investigation_id)
+            ->whereKeyNot($currentRun->id)
+            ->get();
+
+        if ($otherRuns->isEmpty()) {
+            return [];
+        }
 
         $byIp = [];
-        foreach ($runs as $run) {
-            $target = $run->target ?: (data_get($run->report, '_parsed.target') ?: data_get($run->report, '_parsed.account_identifier') ?: ('Run ' . $run->id));
-            $parsed = data_get($run->report, '_parsed', []);
-            if (! is_array($parsed)) continue;
 
-            foreach ($this->extractConnectionIpsForVinculo($parsed) as $ip => $meta) {
-                $ip = trim((string) $ip);
-                if ($ip === '') continue;
+        foreach ($otherRuns as $run) {
+            $parsed = $this->loadParsedPayload($run) ?? [];
+            if (! is_array($parsed)) {
+                continue;
+            }
+
+            $otherIps = $this->extractConnectionIpsForVinculo($parsed);
+            if (count($otherIps) === 0) {
+                continue;
+            }
+
+            $sharedIps = array_intersect(array_keys($currentIps), array_keys($otherIps));
+            if (count($sharedIps) === 0) {
+                continue;
+            }
+
+            $target = $run->target ?: ('Run ' . $run->id);
+
+            foreach ($sharedIps as $ip) {
+                $currentMeta = $currentIps[$ip] ?? null;
+                $otherMeta = $otherIps[$ip] ?? null;
+
+                if (! is_array($currentMeta) || ! is_array($otherMeta)) {
+                    continue;
+                }
 
                 $byIp[$ip] ??= [
                     'ip' => $ip,
-                    'targets_map' => [],
-                    'run_ids' => [],
-                    'accesses' => [],
-                    'total_occurrences' => 0,
+                    'accesses' => [
+                        [
+                            'run_id' => $currentRun->id,
+                            'target' => (string) ($currentRun->target ?: ('Run ' . $currentRun->id)),
+                            'count' => (int) ($currentMeta['occurrences'] ?? 0),
+                            'first_seen' => $this->formatCarbonForVinculo($currentMeta['first_seen_at'] ?? null),
+                            'last_seen' => $this->formatCarbonForVinculo($currentMeta['last_seen_at'] ?? null),
+                            'times' => $currentMeta['times'] ?? [],
+                            'status' => $currentRun->status,
+                            'progress' => (int) $currentRun->progress,
+                            'is_selected' => true,
+                        ],
+                    ],
+                    'targets_count' => 1,
+                    'total_occurrences' => (int) ($currentMeta['occurrences'] ?? 0),
                     'last_seen_at' => null,
                 ];
 
-                $byIp[$ip]['targets_map'][(string) $target] = true;
-                $byIp[$ip]['run_ids'][$run->id] = true;
-                $byIp[$ip]['total_occurrences'] += (int) ($meta['occurrences'] ?? 0);
                 $byIp[$ip]['accesses'][] = [
                     'run_id' => $run->id,
                     'target' => (string) $target,
-                    'count' => (int) ($meta['occurrences'] ?? 0),
-                    'first_seen' => $this->formatCarbonForVinculo($meta['first_seen_at'] ?? null),
-                    'last_seen' => $this->formatCarbonForVinculo($meta['last_seen_at'] ?? null),
-                    'times' => $meta['times'] ?? [],
+                    'count' => (int) ($otherMeta['occurrences'] ?? 0),
+                    'first_seen' => $this->formatCarbonForVinculo($otherMeta['first_seen_at'] ?? null),
+                    'last_seen' => $this->formatCarbonForVinculo($otherMeta['last_seen_at'] ?? null),
+                    'times' => $otherMeta['times'] ?? [],
                     'status' => $run->status,
                     'progress' => (int) $run->progress,
+                    'is_selected' => false,
                 ];
+                $byIp[$ip]['targets_count']++;
+                $byIp[$ip]['total_occurrences'] += (int) ($otherMeta['occurrences'] ?? 0);
 
-                $lastSeenAt = $meta['last_seen_at'] ?? null;
-                if ($lastSeenAt instanceof Carbon && (
-                    $byIp[$ip]['last_seen_at'] === null ||
-                    $lastSeenAt->greaterThan($byIp[$ip]['last_seen_at'])
-                )) {
-                    $byIp[$ip]['last_seen_at'] = $lastSeenAt;
+                $lastSeenCandidates = array_filter([
+                    $currentMeta['last_seen_at'] ?? null,
+                    $otherMeta['last_seen_at'] ?? null,
+                ], fn ($value) => $value instanceof Carbon);
+
+                foreach ($lastSeenCandidates as $lastSeenAt) {
+                    if (
+                        $byIp[$ip]['last_seen_at'] === null ||
+                        $lastSeenAt->greaterThan($byIp[$ip]['last_seen_at'])
+                    ) {
+                        $byIp[$ip]['last_seen_at'] = $lastSeenAt;
+                    }
                 }
             }
         }
 
-        $sharedIps = array_keys(array_filter($byIp, fn (array $row): bool => count($row['run_ids']) > 1));
+        $sharedIps = array_keys($byIp);
         if (count($sharedIps) === 0) {
             return [];
         }
@@ -1599,19 +1729,28 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
         $rows = [];
 
         foreach ($byIp as $ip => $row) {
-            if (count($row['run_ids']) < 2) continue;
-
             $en = $enrichments->get($ip);
             $provider = trim(($en?->isp ?? '') ?: ($en?->org ?? ''));
             $provider = preg_replace('/\s+/u', ' ', $provider ?? '') ?? '';
 
-            $targets = array_keys($row['targets_map']);
-            sort($targets, SORT_NATURAL | SORT_FLAG_CASE);
+            usort($row['accesses'], function (array $left, array $right): int {
+                $leftSelected = (bool) ($left['is_selected'] ?? false);
+                $rightSelected = (bool) ($right['is_selected'] ?? false);
+
+                if ($leftSelected !== $rightSelected) {
+                    return $leftSelected ? -1 : 1;
+                }
+
+                return strcmp((string) ($left['target'] ?? ''), (string) ($right['target'] ?? ''));
+            });
 
             $rows[] = [
                 'ip' => $ip,
-                'targets' => implode(' | ', $targets),
-                'targets_count' => count($targets),
+                'targets' => implode(' | ', array_map(
+                    fn (array $access): string => (string) ($access['target'] ?? ''),
+                    $row['accesses'],
+                )),
+                'targets_count' => (int) ($row['targets_count'] ?? count($row['accesses'])),
                 'total_occurrences' => (int) $row['total_occurrences'],
                 'last_seen' => $row['last_seen_at'] ? $row['last_seen_at']->copy()->setTimezone('America/Sao_Paulo')->format('d/m/Y H:i:s') : null,
                 'provider' => $provider !== '' ? $provider : 'Desconhecido',
@@ -1746,10 +1885,6 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
         ];
 
         $heavyKeys = [
-            'timeline_rows',
-            'unique_ip_rows',
-            'provider_stats_rows',
-            'city_stats_rows',
             'provider_ip_map',
             'groups_rows',
             'bilhetagem_cards',
@@ -1778,9 +1913,52 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
             }
         }
 
+        $report['symmetric_contacts'] = [];
+        $report['asymmetric_contacts'] = [];
+
+        $report['timeline_rows'] = array_slice($report['timeline_rows'] ?? [], 0, 200);
+        $report['unique_ip_rows'] = array_slice($report['unique_ip_rows'] ?? [], 0, 200);
+        $report['provider_stats_rows'] = array_slice($report['provider_stats_rows'] ?? [], 0, 100);
+        $report['city_stats_rows'] = array_slice($report['city_stats_rows'] ?? [], 0, 100);
+        $report['groups_rows'] = array_slice($report['groups_rows'] ?? [], 0, 100);
+        $report['bilhetagem_cards'] = array_slice($report['bilhetagem_cards'] ?? [], 0, 100);
+        $report['vinculo_rows'] = array_slice($report['vinculo_rows'] ?? [], 0, 100);
+        $report['night_events_rows'] = array_slice($report['night_events_rows'] ?? [], 0, 200);
+        $report['mobile_events_rows'] = array_slice($report['mobile_events_rows'] ?? [], 0, 200);
+
+        $providerIpMap = [];
+        foreach (array_slice($report['provider_ip_map'] ?? [], 0, 100, true) as $provider => $ips) {
+            $providerIpMap[$provider] = array_slice(is_array($ips) ? $ips : [], 0, 100);
+        }
+        $report['provider_ip_map'] = $providerIpMap;
+
         $report['_counts'] = $counts;
 
         return $report;
+    }
+
+    protected function loadContactsForType(string $type): array
+    {
+        $run = $this->loadRunForReport($this->runId);
+        if (! $run) {
+            return [];
+        }
+
+        $parsed = $this->loadParsedPayload($run);
+        if (! is_array($parsed)) {
+            return [];
+        }
+
+        $contacts = $type === 'simetricos'
+            ? (array) ($parsed['symmetric_contacts'] ?? [])
+            : (array) ($parsed['asymmetric_contacts'] ?? []);
+
+        $contacts = array_values(array_filter(array_map(
+            fn ($value): ?string => ($trimmed = trim((string) $value)) !== '' ? $trimmed : null,
+            $contacts,
+        )));
+
+        return array_slice(array_values(array_unique($contacts)), 0, 1000);
     }
 
     protected function reportCacheKey(AnaliseRun $run, ?string $tab = null): string
@@ -1810,7 +1988,6 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
     {
         $investigation = AnaliseInvestigation::query()
             ->whereKey($investigationId)
-            ->where('user_id', auth()->id())
             ->first();
 
         if (! $investigation) {
@@ -1827,7 +2004,7 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
         $runs = AnaliseRun::query()
             ->where('investigation_id', $investigation->id)
             ->orderBy('id')
-            ->get();
+            ->get(['id', 'investigation_id', 'target', 'status', 'progress', 'total_unique_ips', 'created_at']);
 
         $this->targetRuns = $this->formatTargetRuns($runs->all());
         $this->running = $runs->contains(fn (AnaliseRun $run) => $run->status === 'running');
@@ -1843,13 +2020,28 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
 
         if ($selected->status === 'done') {
             $this->tab = 'timeline';
-            $this->hydrateReportFromRun($selected, 'timeline');
+            $selectedRun = $this->loadRunForReport($selected->id);
+            if ($selectedRun) {
+                $this->runWarnings = data_get($selectedRun->report, '_warnings.ignored_bilhetagens', []) ?: [];
+                $this->hydrateReportFromRun($selectedRun, 'timeline');
+            }
         }
+    }
+
+    protected function canViewInvestigation(AnaliseInvestigation $investigation): bool
+    {
+        if ((int) $investigation->user_id === (int) auth()->id()) {
+            return true;
+        }
+
+        return method_exists(RelatoriosProcessados::class, 'canAccess')
+            ? (bool) RelatoriosProcessados::canAccess()
+            : false;
     }
 
     protected function loadExistingRun(int $runId): void
     {
-        $run = AnaliseRun::find($runId);
+        $run = $this->loadRunLight($runId);
         if (! $run) {
             Notification::make()->title('Relatório processado não encontrado')->danger()->send();
             return;
@@ -1858,7 +2050,7 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
         $this->runId = $run->id;
         $this->selectedTargetRunId = $run->id;
         $this->progress = (int) $run->progress;
-        $this->running = ($run->status === 'running');
+        $this->running = in_array((string) $run->status, ['queued', 'running'], true);
 
         if ($run->investigation_id) {
             $this->investigationId = (int) $run->investigation_id;
@@ -1871,25 +2063,25 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
             }
         }
 
-        $batchRunIds = data_get($run->report, '_batch_run_ids', []);
-        $batchRunIds = is_array($batchRunIds)
-            ? array_values(array_unique(array_filter(array_map('intval', $batchRunIds))))
-            : [];
-
         $targetRuns = $run->investigation_id
-            ? AnaliseRun::where('investigation_id', $run->investigation_id)->orderBy('id')->get()->all()
-            : (count($batchRunIds) > 0
-            ? AnaliseRun::whereIn('id', $batchRunIds)->orderBy('id')->get()->all()
-            : [$run]);
+            ? AnaliseRun::where('investigation_id', $run->investigation_id)
+                ->orderBy('id')
+                ->get(['id', 'investigation_id', 'target', 'status', 'progress', 'total_unique_ips', 'created_at'])
+                ->all()
+            : [$run];
 
         $this->targetRuns = $this->formatTargetRuns($targetRuns);
-        $this->running = collect($targetRuns)->contains(fn (AnaliseRun $item) => $item->status === 'running');
+        $this->running = collect($targetRuns)->contains(fn (AnaliseRun $item) => in_array((string) $item->status, ['queued', 'running'], true));
 
-        $this->runWarnings = data_get($run->report, '_warnings.ignored_bilhetagens', []) ?: [];
+        $this->runWarnings = [];
 
         if ($run->status === 'done') {
             $this->tab = 'timeline';
-            $this->hydrateReportFromRun($run, 'timeline');
+            $fullRun = $this->loadRunForReport($run->id);
+            if ($fullRun) {
+                $this->runWarnings = data_get($fullRun->report, '_warnings.ignored_bilhetagens', []) ?: [];
+                $this->hydrateReportFromRun($fullRun, 'timeline');
+            }
         }
     }
 
@@ -1986,6 +2178,103 @@ class AnaliseInteligenteWPP extends Page implements HasSchemas
     // =========================================================
     // Helpers: zip/html + ip + alvo
     // =========================================================
+    protected function storeParsedPayload(string $runUuid, array $parsed): string
+    {
+        $path = 'analise-runs/' . $runUuid . '/parsed.json.gz';
+        $json = json_encode($parsed, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        if ($json === false) {
+            $json = '{}';
+        }
+
+        Storage::disk('local')->put($path, gzencode($json, 6));
+
+        return $path;
+    }
+
+    protected function loadParsedPayload(AnaliseRun $run): ?array
+    {
+        $inline = data_get($run->report, '_parsed');
+        if (is_array($inline)) {
+            $path = data_get($run->report, '_parsed_path');
+            if (! is_string($path) || trim($path) === '') {
+                $path = $this->storeParsedPayload((string) ($run->uuid ?: Str::uuid()), $inline);
+
+                $report = is_array($run->report) ? $run->report : [];
+                unset($report['_parsed']);
+                $report['_parsed_path'] = $path;
+
+                $run->report = $report;
+                $run->save();
+            }
+
+            return $inline;
+        }
+
+        $path = data_get($run->report, '_parsed_path');
+        if (! is_string($path) || trim($path) === '') {
+            return null;
+        }
+
+        $disk = Storage::disk('local');
+        if (! $disk->exists($path)) {
+            return null;
+        }
+
+        $content = $disk->get($path);
+        if (! is_string($content) || $content === '') {
+            return null;
+        }
+
+        $json = @gzdecode($content);
+        if (! is_string($json) || $json === '') {
+            $json = $content;
+        }
+
+        $decoded = json_decode($json, true);
+
+        return is_array($decoded) ? $decoded : null;
+    }
+
+    protected function loadRunLight(int|string|null $runId): ?AnaliseRun
+    {
+        $runId = (int) $runId;
+        if ($runId <= 0) {
+            return null;
+        }
+
+        return AnaliseRun::query()
+            ->whereKey($runId)
+            ->first(['id', 'user_id', 'investigation_id', 'target', 'status', 'progress', 'total_unique_ips', 'created_at']);
+    }
+
+    protected function loadRunForReport(int|string|null $runId): ?AnaliseRun
+    {
+        $runId = (int) $runId;
+        if ($runId <= 0) {
+            return null;
+        }
+
+        return AnaliseRun::query()
+            ->whereKey($runId)
+            ->first([
+                'id',
+                'user_id',
+                'investigation_id',
+                'uuid',
+                'source',
+                'target',
+                'total_unique_ips',
+                'processed_unique_ips',
+                'progress',
+                'status',
+                'error_message',
+                'report',
+                'created_at',
+                'updated_at',
+            ]);
+    }
+
     protected function resolveHtmlFromUpload(string $storedPath): ?string
     {
         $disk = Storage::disk('public');

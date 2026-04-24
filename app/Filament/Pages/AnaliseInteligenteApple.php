@@ -3,6 +3,10 @@
 namespace App\Filament\Pages;
 
 use App\Filament\Pages\Concerns\HandlesPlatformLogAnalysis;
+use App\Services\AnaliseInteligente\Apple\AppleLogParser;
+use App\Services\AnaliseInteligente\Apple\AppleReportAggregator;
+use App\Services\AnaliseInteligente\Platform\PlatformLogParser;
+use App\Services\AnaliseInteligente\Platform\PlatformReportAggregator;
 use BezhanSalleh\FilamentShield\Traits\HasPageShield;
 use Filament\Pages\Page;
 use Filament\Schemas\Concerns\InteractsWithSchemas;
@@ -39,5 +43,15 @@ class AnaliseInteligenteApple extends Page implements HasSchemas
     protected function platformLabel(): string
     {
         return 'Apple';
+    }
+
+    protected function makeLogParser(): PlatformLogParser
+    {
+        return new AppleLogParser();
+    }
+
+    protected function makeReportAggregator(): PlatformReportAggregator
+    {
+        return new AppleReportAggregator();
     }
 }

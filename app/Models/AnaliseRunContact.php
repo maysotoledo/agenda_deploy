@@ -9,8 +9,15 @@ class AnaliseRunContact extends Model
 {
     protected $fillable = [
         'analise_run_id',
+        'contact_type',
         'phone',
+        'value',
         'name',
+        'metadata',
+    ];
+
+    protected $casts = [
+        'metadata' => 'array',
     ];
 
     public function run(): BelongsTo

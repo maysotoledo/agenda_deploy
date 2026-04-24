@@ -23,7 +23,7 @@
         </div>
 
         <div class="flex flex-wrap items-center gap-2">
-            @if($user?->hasRole('epc'))
+            @if($user?->hasRole('epc') || $user?->hasRole('cartorio_central'))
                 @if($googleCalendar->canSync($user))
                     <form method="post" action="{{ route('google-calendar.disconnect') }}">
                         @csrf

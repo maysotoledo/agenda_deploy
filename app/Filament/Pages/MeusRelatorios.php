@@ -94,10 +94,17 @@ class MeusRelatorios extends Page implements HasTable
                     ->searchable(),
 
                 Tables\Columns\TextColumn::make('source_label')
-                    ->label('Tipo')
-                    ->state(fn (AnaliseInvestigation $record): string => $record->source === 'whatsapp' ? 'WhatsApp' : ucfirst($record->source))
+                    ->label('Plataforma')
+                    ->state(fn (AnaliseInvestigation $record): string => $this->resolveInvestigationSourceLabel($record->source))
                     ->badge()
-                    ->color(fn (string $state): string => $state === 'WhatsApp' ? 'success' : 'gray'),
+                    ->color(fn (string $state): string => match ($state) {
+                        'WhatsApp' => 'success',
+                        'Instagram' => 'info',
+                        'Genérico' => 'warning',
+                        'Google' => 'primary',
+                        'Apple' => 'gray',
+                        default => 'gray',
+                    }),
 
                 Tables\Columns\TextColumn::make('name')
                     ->label('Investigação')
@@ -122,7 +129,7 @@ class MeusRelatorios extends Page implements HasTable
             ])
             ->filters([
                 Tables\Filters\SelectFilter::make('source')
-                    ->label('Tipo')
+                    ->label('Plataforma')
                     ->options([
                         'whatsapp' => 'WhatsApp',
                         'instagram' => 'Instagram',
@@ -204,6 +211,18 @@ class MeusRelatorios extends Page implements HasTable
         return 'whatsapp';
     }
 
+    public function resolveInvestigationSourceLabel(string $source): string
+    {
+        return match (strtolower(trim($source))) {
+            'instagram' => 'Instagram',
+            'google' => 'Google',
+            'apple' => 'Apple',
+            'whatsapp' => 'WhatsApp',
+            'generico', 'generic' => 'Genérico',
+            default => 'Genérico',
+        };
+    }
+
     public function resolveSourceLabel(AnaliseRun $run): string
     {
         return match ($this->resolveSource($run)) {
@@ -219,6 +238,22 @@ class MeusRelatorios extends Page implements HasTable
     public function resolveViewUrl(AnaliseInvestigation $investigation): string
     {
         $run = $investigation->runs()->orderBy('id')->first();
+
+        if ($investigation->source === 'google') {
+            return AnaliseInteligenteGoogle::getUrl(['investigation' => $investigation->id]);
+        }
+
+        if ($investigation->source === 'apple') {
+            return AnaliseInteligenteApple::getUrl(['investigation' => $investigation->id]);
+        }
+
+        if ($investigation->source === 'generico') {
+            return AnaliseInteligenteGenerico::getUrl(['investigation' => $investigation->id]);
+        }
+
+        if ($investigation->source === 'instagram') {
+            return AnaliseInteligenteInsta::getUrl(['investigation' => $investigation->id]);
+        }
 
         return match ($investigation->source) {
             'instagram' => $run

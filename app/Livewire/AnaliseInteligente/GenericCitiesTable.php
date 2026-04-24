@@ -2,32 +2,50 @@
 
 namespace App\Livewire\AnaliseInteligente;
 
+use App\Models\AnaliseRunIp;
+use Filament\Support\Contracts\TranslatableContentDriver;
 use Filament\Tables\Columns\TextColumn;
+use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Table;
-use Filament\Tables\TableComponent;
-use Illuminate\Support\Collection;
+use Filament\Tables\Concerns\InteractsWithTable;
+use Livewire\Component;
 
-class GenericCitiesTable extends TableComponent
+class GenericCitiesTable extends Component implements HasTable
 {
-    public array $rows = [];
+    use InteractsWithTable;
+
+    public int $runId;
 
     public function table(Table $table): Table
     {
         return $table
-            ->records(fn (): Collection => collect($this->rows))
+            ->query(
+                AnaliseRunIp::query()
+                    ->leftJoin('ip_enrichments', 'ip_enrichments.ip', '=', 'analise_run_ips.ip')
+                    ->where('analise_run_id', $this->runId)
+                    ->selectRaw("
+                        MIN(analise_run_ips.id) as id,
+                        COALESCE(NULLIF(ip_enrichments.city, ''), 'Desconhecida') as city,
+                        SUM(analise_run_ips.occurrences) as occurrences,
+                        COUNT(*) as unique_ips,
+                        COUNT(DISTINCT COALESCE(NULLIF(ip_enrichments.isp, ''), NULLIF(ip_enrichments.org, ''), 'Desconhecido')) as providers,
+                        SUM(CASE WHEN ip_enrichments.mobile = 1 THEN analise_run_ips.occurrences ELSE 0 END) as mobile_occurrences,
+                        MAX(analise_run_ips.last_seen_at) as last_seen_at
+                    ")
+                    ->groupBy('city')
+            )
             ->columns([
                 TextColumn::make('city')
                     ->label('Cidade')
-                    ->searchable()
                     ->wrap(),
 
                 TextColumn::make('occurrences')
-                    ->label('Ocorrências')
+                    ->label('Ocorrencias')
                     ->numeric()
                     ->sortable(),
 
                 TextColumn::make('unique_ips')
-                    ->label('IPs únicos')
+                    ->label('IPs unicos')
                     ->numeric()
                     ->sortable(),
 
@@ -37,23 +55,32 @@ class GenericCitiesTable extends TableComponent
                     ->sortable(),
 
                 TextColumn::make('mobile_occurrences')
-                    ->label('Ocorr. móvel')
+                    ->label('Ocorr. movel')
                     ->numeric()
                     ->sortable()
                     ->toggleable(),
 
                 TextColumn::make('mobile_percent')
-                    ->label('% móvel')
-                    ->numeric()
-                    ->sortable(),
+                    ->label('% movel')
+                    ->state(fn ($record): float => (float) ($record->occurrences > 0 ? round(($record->mobile_occurrences / $record->occurrences) * 100, 2) : 0)),
 
-                TextColumn::make('last_seen_utc')
-                    ->label('Último (UTC)')
-                    ->sortable()
-                    ->searchable(),
+                TextColumn::make('last_seen_at')
+                    ->label('Ultimo (GMT-3)')
+                    ->formatStateUsing(fn ($state): ?string => $state?->timezone('America/Sao_Paulo')->format('d/m/Y H:i:s'))
+                    ->sortable(),
             ])
             ->defaultSort('occurrences', 'desc')
             ->paginated([25, 50, 100])
             ->defaultPaginationPageOption(25);
+    }
+
+    public function render()
+    {
+        return view('livewire.analise-inteligente.generic-cities-table');
+    }
+
+    public function makeFilamentTranslatableContentDriver(): ?TranslatableContentDriver
+    {
+        return null;
     }
 }

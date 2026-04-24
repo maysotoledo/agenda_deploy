@@ -55,9 +55,13 @@
                             @php
                                 $target = trim((string) ($access['target'] ?? ''));
                                 $target = $target !== '' ? $target : 'Alvo não identificado';
+                                $isSelected = (bool) ($access['is_selected'] ?? false);
                             @endphp
 
-                            <tr class="hover:bg-gray-50">
+                            <tr @class([
+                                'hover:bg-gray-50',
+                                'bg-primary-50/40' => $isSelected,
+                            ])>
                                 <td class="px-5 py-3 pr-2 align-middle">
                                     <button
                                         type="button"
@@ -67,6 +71,7 @@
                                     >
                                         {{ $target }}
                                     </button>
+                                    
                                 </td>
                                 <td class="border-l border-gray-100 py-3 pl-4 pr-6 text-right tabular-nums align-middle font-medium">
                                     {{ number_format((int) ($access['count'] ?? 0), 0, ',', '.') }}

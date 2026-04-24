@@ -2,47 +2,80 @@
 
 namespace App\Filament\Pages\Concerns;
 
+use App\Actions\AnaliseInteligente\Platform\ResolveInvestigationAction;
+use App\Jobs\AnaliseInteligente\Platform\ProcessPlatformInvestigationJob;
+use App\Filament\Pages\RelatoriosProcessados;
+use App\Models\AnaliseInvestigation;
 use App\Models\AnaliseRun;
+use App\Models\AnaliseRunContact;
+use App\Models\AnaliseRunEvent;
 use App\Models\AnaliseRunIp;
+use App\Models\AnaliseRunMedia;
+use App\Models\AnaliseRunMessage;
+use App\Models\AnaliseRunStep;
 use App\Models\IpEnrichment;
-use App\Services\AnaliseInteligente\Platform\PlatformLogParser;
-use App\Services\AnaliseInteligente\Platform\PlatformReportAggregator;
-use App\Services\AnaliseInteligente\RunStepper;
+use App\Services\AnaliseInteligente\Platform\PlatformRunSummaryService;
+use Carbon\Carbon;
+use Filament\Actions\Action;
 use Filament\Forms\Components\FileUpload;
+use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
 use Filament\Schemas\Schema;
-use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
+use Filament\Support\Enums\Width;
+use Illuminate\Support\Str;
+use Livewire\Attributes\On;
 
 trait HandlesPlatformLogAnalysis
 {
     public ?array $data = [];
+    public ?int $investigationId = null;
+    public ?array $investigation = null;
     public ?int $runId = null;
+    public ?int $selectedTargetRunId = null;
+    public array $targetRuns = [];
     public int $progress = 0;
     public bool $running = false;
     public ?array $report = null;
-    public int $chunkSize = 8;
     public string $tab = 'timeline';
+    public ?string $selectedProvider = null;
+    public array $selectedProviderIps = [];
+    public ?string $vinculoModalIp = null;
+    public ?string $vinculoModalTarget = null;
+    public array $vinculoModalTimes = [];
+    public int $vinculoPage = 1;
+    public int $vinculoPerPage = 10;
 
     abstract protected function platformSource(): string;
     abstract protected function platformLabel(): string;
 
     public function mount(): void
     {
-        $this->form->fill();
+        $investigationId = request()->integer('investigation');
+        if ($investigationId) {
+            $this->loadExistingInvestigation($investigationId);
+        }
 
         $runId = request()->integer('run');
         if ($runId) {
             $this->loadExistingRun($runId);
         }
+
+        $this->form->fill([
+            'investigation_name' => $this->investigation['name'] ?? null,
+        ]);
     }
 
     public function form(Schema $schema): Schema
     {
         return $schema
             ->components([
+                TextInput::make('investigation_name')
+                    ->label('Nome da investigacao')
+                    ->required(fn () => $this->investigationId === null)
+                    ->disabled(fn () => $this->investigationId !== null)
+                    ->dehydrated(fn () => $this->investigationId === null)
+                    ->maxLength(160),
+
                 FileUpload::make('log_files')
                     ->label('Arquivos de log ' . $this->platformLabel() . ' (PDF/TXT/LOG/CSV/JSON/HTML/ZIP)')
                     ->required()
@@ -74,14 +107,14 @@ trait HandlesPlatformLogAnalysis
 
     public function gerar(): void
     {
-        if ($this->running) {
-            return;
-        }
-
         $this->report = null;
         $this->progress = 0;
         $this->running = false;
         $this->tab = 'timeline';
+        $this->targetRuns = [];
+        $this->selectedTargetRunId = null;
+        $this->selectedProvider = null;
+        $this->selectedProviderIps = [];
 
         $state = $this->form->getState();
         $storedPaths = $state['log_files'] ?? [];
@@ -95,87 +128,108 @@ trait HandlesPlatformLogAnalysis
             return;
         }
 
-        $rawText = $this->extractTextFromUploads($storedPaths);
-        if (trim($rawText) === '') {
-            Notification::make()->title('Não foi possível extrair texto dos arquivos')->danger()->send();
+        try {
+            $investigation = app(ResolveInvestigationAction::class)->execute(
+                investigationId: $this->investigationId,
+                userId: (int) auth()->id(),
+                source: $this->platformSource(),
+                name: (string) ($state['investigation_name'] ?? ''),
+            );
+        } catch (\RuntimeException $exception) {
+            Notification::make()->title($exception->getMessage())->danger()->send();
             return;
         }
 
-        $rawText = $this->toValidUtf8($rawText, 3_000_000);
-        $parsed = (new PlatformLogParser($this->platformSource(), $this->platformLabel()))->parse($rawText);
-        $parsed = $this->sanitizeForJson($parsed);
+        $batchId = (string) Str::uuid();
 
-        $ipsMap = $this->buildIpsMap($parsed['events'] ?? []);
+        ProcessPlatformInvestigationJob::dispatch(
+            investigationId: $investigation->id,
+            userId: (int) auth()->id(),
+            source: $this->platformSource(),
+            label: $this->platformLabel(),
+            storedPaths: array_values($storedPaths),
+            batchId: $batchId,
+        );
 
-        if (count($ipsMap) === 0) {
-            Notification::make()->title('Nenhum IP com data/hora foi encontrado no log')->warning()->send();
-            return;
-        }
-
-        $target = $this->resolveTarget($parsed);
-
-        $run = DB::transaction(function () use ($parsed, $ipsMap, $storedPaths, $target) {
-            $run = AnaliseRun::create([
-                'user_id' => auth()->id(),
-                'uuid' => (string) str()->uuid(),
-                'target' => $target,
-                'total_unique_ips' => count($ipsMap),
-                'processed_unique_ips' => 0,
-                'progress' => 0,
-                'status' => 'running',
-                'report' => [
-                    '_source' => $this->platformSource(),
-                    '_files' => array_values($storedPaths),
-                    '_parsed' => $parsed,
-                ],
-            ]);
-
-            foreach ($ipsMap as $ip => $meta) {
-                AnaliseRunIp::create([
-                    'analise_run_id' => $run->id,
-                    'ip' => $ip,
-                    'occurrences' => (int) $meta['occurrences'],
-                    'last_seen_at' => $meta['last_seen_ts']
-                        ? now()->setTimestamp((int) $meta['last_seen_ts'])
-                        : null,
-                    'enriched' => false,
-                ]);
-            }
-
-            return $run;
-        });
-
-        $this->runId = $run->id;
+        $this->investigationId = $investigation->id;
+        $this->investigation = [
+            'id' => $investigation->id,
+            'name' => $investigation->name,
+            'source' => $investigation->source,
+            'platform_label' => $this->platformLabel(),
+        ];
         $this->running = true;
+        $this->progress = 0;
 
-        Notification::make()->title('Processamento iniciado')->success()->send();
+        Notification::make()
+            ->title('Processamento enviado para a fila')
+            ->body('Os arquivos foram enfileirados; a tela agora acompanha o progresso pelo banco.')
+            ->success()
+            ->send();
     }
 
     public function poll(): void
     {
-        if (! $this->runId) {
+        if (! $this->runId && ! $this->investigationId) {
             return;
         }
 
-        $run = AnaliseRun::find($this->runId);
+        if ($this->investigationId) {
+            $this->reconcileGoogleSupplementalRuns($this->investigationId);
+        }
+
+        $runs = AnaliseRun::query()
+            ->when($this->investigationId, fn ($query) => $query->where('investigation_id', $this->investigationId))
+            ->when(! $this->investigationId && $this->runId, fn ($query) => $query->whereKey($this->runId))
+            ->orderBy('id')
+            ->get();
+
+        if ($runs->isEmpty()) {
+            $this->running = false;
+            $this->progress = 0;
+            return;
+        }
+
+        $this->targetRuns = $this->formatTargetRuns($runs->all());
+        $this->running = $runs->contains(fn (AnaliseRun $run): bool => in_array($run->status, ['queued', 'running'], true));
+        $this->progress = (int) floor($runs->avg('progress') ?? 0);
+
+        $visibleRunIds = array_values(array_filter(array_map(fn (array $row): int => (int) ($row['id'] ?? 0), $this->targetRuns)));
+        $preferredRunId = in_array((int) ($this->selectedTargetRunId ?: $this->runId), $visibleRunIds, true)
+            ? (int) ($this->selectedTargetRunId ?: $this->runId)
+            : ($visibleRunIds[0] ?? null);
+
+        $selected = $preferredRunId
+            ? ($runs->firstWhere('id', $preferredRunId) ?? $runs->first())
+            : $runs->first();
+        if ($selected) {
+            $this->runId = $selected->id;
+            $this->selectedTargetRunId = $selected->id;
+
+            if ($selected->status === 'done') {
+                $this->hydrateReportFromRun($selected);
+            }
+        }
+    }
+
+    public function selectTargetRun(int $runId): void
+    {
+        $run = AnaliseRun::query()
+            ->whereKey($runId)
+            ->when($this->investigationId, fn ($query) => $query->where('investigation_id', $this->investigationId))
+            ->first();
+
         if (! $run) {
             return;
         }
 
-        $this->progress = (int) $run->progress;
-        $this->running = ($run->status === 'running');
+        $this->runId = $run->id;
+        $this->selectedTargetRunId = $run->id;
+        $this->report = null;
+        $this->tab = 'timeline';
 
-        if ($run->status === 'running') {
-            app(RunStepper::class)->step($run, $this->chunkSize, 0.5);
-
-            $run->refresh();
-            $this->progress = (int) $run->progress;
-            $this->running = ($run->status === 'running');
-        }
-
-        if ($run->status === 'done' && $this->report === null) {
-            $this->hydrateReportFromRun($run, 'timeline');
-            Notification::make()->title('Relatório pronto')->success()->send();
+        if ($run->status === 'done') {
+            $this->hydrateReportFromRun($run);
         }
     }
 
@@ -187,13 +241,17 @@ trait HandlesPlatformLogAnalysis
 
         $this->tab = $tab;
 
+        if ($tab === 'vinculo') {
+            $this->vinculoPage = 1;
+        }
+
         if (! $this->runId || ! $this->report) {
             return;
         }
 
-        $run = AnaliseRun::find($this->runId);
+        $run = AnaliseRun::query()->find($this->runId);
         if ($run && $run->status === 'done') {
-            $this->hydrateReportFromRun($run, $tab);
+            $this->hydrateReportFromRun($run);
         }
     }
 
@@ -204,12 +262,55 @@ trait HandlesPlatformLogAnalysis
         }
 
         $this->runId = null;
+        $this->selectedTargetRunId = null;
         $this->progress = 0;
         $this->running = false;
         $this->report = null;
+        $this->targetRuns = [];
         $this->tab = 'timeline';
+        $this->selectedProvider = null;
+        $this->selectedProviderIps = [];
+        $this->vinculoModalIp = null;
+        $this->vinculoModalTarget = null;
+        $this->vinculoModalTimes = [];
+        $this->vinculoPage = 1;
 
         $this->form->fill();
+    }
+
+    #[On('open-provider-ips-modal')]
+    public function openProviderIpsModal(string $provider): void
+    {
+        if (! $this->runId) {
+            return;
+        }
+
+        $provider = trim($provider);
+        $this->selectedProvider = $provider !== '' ? $provider : 'Desconhecido';
+        $this->selectedProviderIps = app(PlatformRunSummaryService::class)->providerIpRows($this->runId, $this->selectedProvider);
+
+        $this->mountAction('providerIpsModal');
+    }
+
+    public function providerIpsModal(): Action
+    {
+        return Action::make('providerIpsModal')
+            ->label('IPs do Provedor')
+            ->modalHeading(fn () => 'IPs - ' . ($this->selectedProvider ?? 'Desconhecido'))
+            ->modalWidth(Width::SevenExtraLarge)
+            ->modalSubmitAction(false)
+            ->modalCancelActionLabel('Fechar')
+            ->after(fn () => $this->closeProviderModalState())
+            ->modalContent(fn () => view('filament.pages.partials.modal-provider-ips', [
+                'rows' => $this->selectedProviderIps,
+                'provider' => $this->selectedProvider,
+            ]));
+    }
+
+    protected function closeProviderModalState(): void
+    {
+        $this->selectedProvider = null;
+        $this->selectedProviderIps = [];
     }
 
     protected function loadExistingRun(int $runId): void
@@ -217,272 +318,613 @@ trait HandlesPlatformLogAnalysis
         $run = AnaliseRun::find($runId);
 
         if (! $run) {
-            Notification::make()->title('Relatório processado não encontrado')->danger()->send();
+            Notification::make()->title('Relatorio processado nao encontrado')->danger()->send();
             return;
         }
 
-        $source = strtolower((string) ($run->report['_source'] ?? ''));
+        $source = strtolower((string) ($run->source ?: data_get($run->summary, '_source', '')));
         if ($source !== $this->platformSource()) {
-            Notification::make()->title('Este relatório pertence a outro tipo de análise')->danger()->send();
+            Notification::make()->title('Este relatorio pertence a outro tipo de analise')->danger()->send();
             return;
         }
 
         $this->runId = $run->id;
+        $this->selectedTargetRunId = $run->id;
+        if ($run->investigation_id) {
+            $this->reconcileGoogleSupplementalRuns((int) $run->investigation_id);
+            $this->investigationId = (int) $run->investigation_id;
+            $investigation = AnaliseInvestigation::find($run->investigation_id);
+            if ($investigation) {
+                $this->investigation = [
+                    'id' => $investigation->id,
+                    'name' => $investigation->name,
+                    'source' => $investigation->source,
+                    'platform_label' => $this->platformLabel(),
+                ];
+            }
+
+            $this->targetRuns = $this->formatTargetRuns(
+                AnaliseRun::query()->where('investigation_id', $run->investigation_id)->orderBy('id')->get()->all(),
+            );
+        }
         $this->progress = (int) $run->progress;
-        $this->running = ($run->status === 'running');
+        $this->running = in_array((string) $run->status, ['queued', 'running'], true);
 
         if ($run->status === 'done') {
             $this->tab = 'timeline';
-            $this->hydrateReportFromRun($run, 'timeline');
+            $this->hydrateReportFromRun($run);
         }
     }
 
-    protected function hydrateReportFromRun(AnaliseRun $run, ?string $activeTab = null): void
+    protected function loadExistingInvestigation(int $investigationId): void
     {
-        $report = Cache::remember(
-            $this->reportCacheKey($run),
-            now()->addHour(),
-            fn () => $this->buildReportFromRun($run)
-        );
+        $this->reconcileGoogleSupplementalRuns($investigationId);
 
-        if (! is_array($report)) {
+        $investigation = AnaliseInvestigation::query()->whereKey($investigationId)->first();
+
+        if (! $investigation || ! $this->canViewInvestigation($investigation)) {
+            Notification::make()->title('Investigacao nao encontrada')->danger()->send();
             return;
         }
 
-        $this->report = $this->filterReportForActiveTab($report, $activeTab ?? $this->tab);
-    }
-
-    protected function buildReportFromRun(AnaliseRun $run): ?array
-    {
-        $parsed = $run->report['_parsed'] ?? null;
-
-        if (! is_array($parsed)) {
-            Notification::make()->title('Sem dados para montar relatório')->danger()->send();
-            return null;
+        if ($investigation->source !== $this->platformSource()) {
+            Notification::make()->title('Esta investigacao pertence a outra plataforma')->danger()->send();
+            return;
         }
 
-        $ips = AnaliseRunIp::where('analise_run_id', $run->id)->pluck('ip')->all();
-        $enrs = IpEnrichment::whereIn('ip', $ips)->get()->keyBy('ip');
+        $runs = AnaliseRun::query()
+            ->where('investigation_id', $investigation->id)
+            ->orderBy('id')
+            ->get();
 
-        $enrichedByIp = [];
-        foreach ($ips as $ip) {
-            $enrichment = $enrs->get($ip);
+        $this->investigationId = $investigation->id;
+        $this->investigation = [
+            'id' => $investigation->id,
+            'name' => $investigation->name,
+            'source' => $investigation->source,
+            'platform_label' => $this->platformLabel(),
+        ];
+        $this->targetRuns = $this->formatTargetRuns($runs->all());
+        $this->running = $runs->contains(fn (AnaliseRun $run): bool => in_array($run->status, ['queued', 'running'], true));
+        $this->progress = (int) floor($runs->avg('progress') ?? 0);
 
-            $enrichedByIp[$ip] = [
-                'ip' => $ip,
-                'city' => $enrichment?->city,
-                'isp' => $enrichment?->isp,
-                'org' => $enrichment?->org,
-                'mobile' => $enrichment?->mobile,
+        $visibleRunIds = array_values(array_filter(array_map(fn (array $row): int => (int) ($row['id'] ?? 0), $this->targetRuns)));
+        $first = count($visibleRunIds) > 0
+            ? $runs->firstWhere('id', $visibleRunIds[0])
+            : $runs->first();
+        if ($first) {
+            $this->runId = $first->id;
+            $this->selectedTargetRunId = $first->id;
+
+            if ($first->status === 'done') {
+                $this->hydrateReportFromRun($first);
+            }
+        }
+    }
+
+    protected function hydrateReportFromRun(AnaliseRun $run): void
+    {
+        $report = (array) ($run->summary ?: app(PlatformRunSummaryService::class)->buildSummary($run));
+        $report['selected_target'] = $this->resolveRunTarget($run);
+        $report['selected_run_id'] = (int) $run->id;
+
+        if ($this->platformSource() === 'google') {
+            $report['_counts']['vinculo'] = $this->countVinculoRows($run);
+            $report['vinculo_rows'] = $this->tab === 'vinculo'
+                ? $this->buildVinculoRows($run)
+                : [];
+        }
+
+        $this->report = $report;
+    }
+
+    protected function formatTargetRuns(array $runs): array
+    {
+        $rows = array_map(function (AnaliseRun $run): ?array {
+            $target = $this->resolveRunTarget($run);
+
+            if ($this->platformSource() === 'google' && $target === '') {
+                return null;
+            }
+
+            return [
+                'id' => (int) $run->id,
+                'target' => $target,
+                'status' => (string) $run->status,
+                'progress' => (int) $run->progress,
             ];
+        }, $runs);
+
+        $rows = array_values(array_filter($rows));
+
+        if ($this->platformSource() !== 'google') {
+            return $rows;
         }
 
-        return (new PlatformReportAggregator())->buildReport($parsed, $enrichedByIp);
-    }
+        $grouped = [];
 
-    protected function filterReportForActiveTab(array $report, string $activeTab): array
-    {
-        $counts = [
-            'timeline' => count($report['timeline_rows'] ?? []),
-            'unique_ips' => count($report['unique_ip_rows'] ?? []),
-            'providers' => count($report['provider_stats_rows'] ?? []),
-            'cities' => count($report['city_stats_rows'] ?? []),
-            'residencial' => (int) ($report['night_total_events'] ?? 0),
-            'movel' => (int) ($report['mobile_total_events'] ?? 0),
-        ];
+        foreach ($rows as $row) {
+            $key = mb_strtolower(trim((string) ($row['target'] ?? '')));
+            if ($key === '') {
+                continue;
+            }
 
-        $heavyKeys = [
-            'timeline_rows',
-            'unique_ip_rows',
-            'provider_stats_rows',
-            'city_stats_rows',
-            'night_events_rows',
-            'mobile_events_rows',
-        ];
-
-        $keysByTab = [
-            'timeline' => ['timeline_rows'],
-            'unique_ips' => ['unique_ip_rows'],
-            'providers' => ['provider_stats_rows'],
-            'cities' => ['city_stats_rows'],
-            'residencial' => ['night_events_rows'],
-            'movel' => ['mobile_events_rows'],
-        ];
-
-        $keep = $keysByTab[$activeTab] ?? [];
-
-        foreach ($heavyKeys as $key) {
-            if (! in_array($key, $keep, true)) {
-                $report[$key] = [];
+            if (! isset($grouped[$key]) || (int) $row['id'] > (int) $grouped[$key]['id']) {
+                $grouped[$key] = $row;
             }
         }
 
-        $report['_counts'] = $counts;
-
-        return $report;
+        return array_values($grouped);
     }
 
-    protected function reportCacheKey(AnaliseRun $run): string
+    protected function resolveRunTarget(AnaliseRun $run): string
     {
-        return 'analise-platform-report:' . $this->platformSource() . ':' . $run->getKey();
+        $target = trim((string) ($run->target ?? ''));
+        if ($target !== '') {
+            return $target;
+        }
+
+        return trim((string) (data_get($run->summary, 'subscriber_info.email')
+            ?: data_get($run->summary, 'subscriber_info.account_id')
+            ?: data_get($run->summary, 'accounts_found.0')
+            ?: data_get($run->summary, 'identifiers_found.0.value')
+            ?: ''));
     }
 
     protected function availableTabs(): array
     {
-        return ['timeline', 'unique_ips', 'providers', 'cities', 'residencial', 'movel'];
+        $tabs = ['timeline', 'unique_ips', 'providers', 'cities', 'maps', 'search', 'user_agents', 'residencial', 'movel'];
+
+        if ($this->platformSource() === 'google') {
+            $tabs[] = 'vinculo';
+        }
+
+        return $tabs;
     }
 
-    private function extractTextFromUploads(array $storedPaths): string
+    protected function canViewInvestigation(AnaliseInvestigation $investigation): bool
     {
-        $chunks = [];
-        $disk = Storage::disk('public');
+        if ((int) $investigation->user_id === (int) auth()->id()) {
+            return true;
+        }
 
-        foreach ($storedPaths as $storedPath) {
-            if (! is_string($storedPath) || ! $disk->exists($storedPath)) {
+        return method_exists(RelatoriosProcessados::class, 'canAccess')
+            ? (bool) RelatoriosProcessados::canAccess()
+            : false;
+    }
+
+    protected function reconcileGoogleSupplementalRuns(int $investigationId): void
+    {
+        if ($this->platformSource() !== 'google') {
+            return;
+        }
+
+        $runs = AnaliseRun::query()
+            ->where('investigation_id', $investigationId)
+            ->orderBy('id')
+            ->get();
+
+        if ($runs->count() < 2) {
+            return;
+        }
+
+        $mainRunsByEmail = [];
+
+        foreach ($runs as $run) {
+            $email = $this->extractGoogleRunEmail($run);
+            if (! $email) {
                 continue;
             }
 
-            $fullPath = $disk->path($storedPath);
-            $text = $this->extractTextFromFile($fullPath, $storedPath);
+            $hasSubscriber = is_array(data_get($run->summary, 'subscriber_info'))
+                && count((array) data_get($run->summary, 'subscriber_info')) > 0;
+            $hasAccessEvents = $run->events()->where('event_type', 'access')->exists();
 
-            if (trim($text) !== '') {
-                $chunks[] = "\n\n===== {$storedPath} =====\n\n" . $text;
+            if ($hasSubscriber || $hasAccessEvents || trim((string) $run->target) !== '') {
+                $mainRunsByEmail[$email] = $run;
             }
         }
 
-        return implode("\n\n", $chunks);
+        foreach ($runs as $run) {
+            $email = $this->extractGoogleRunEmail($run);
+            if (! $email) {
+                continue;
+            }
+
+            $hasSubscriber = is_array(data_get($run->summary, 'subscriber_info'))
+                && count((array) data_get($run->summary, 'subscriber_info')) > 0;
+            $hasAccessEvents = $run->events()->where('event_type', 'access')->exists();
+            $hasSupplementalEvents = $run->events()->whereIn('event_type', ['map', 'search'])->exists();
+
+            if ($hasSubscriber || $hasAccessEvents || ! $hasSupplementalEvents) {
+                continue;
+            }
+
+            $mainRun = $mainRunsByEmail[$email] ?? null;
+            if (! $mainRun || (int) $mainRun->id === (int) $run->id) {
+                continue;
+            }
+
+            AnaliseRunEvent::query()
+                ->where('analise_run_id', $run->id)
+                ->update(['analise_run_id' => $mainRun->id]);
+
+            $mainSummary = is_array($mainRun->summary) ? $mainRun->summary : [];
+            $supplementalSummary = is_array($run->summary) ? $run->summary : [];
+
+            $mainSummary['_files'] = array_values(array_unique(array_merge(
+                (array) ($mainSummary['_files'] ?? []),
+                (array) ($supplementalSummary['_files'] ?? []),
+            )));
+            $mainSummary['_fragments'] = array_values(array_unique(array_merge(
+                (array) ($mainSummary['_fragments'] ?? []),
+                (array) ($supplementalSummary['_fragments'] ?? []),
+            )));
+
+            $mainRun->summary = $mainSummary;
+            $mainRun->save();
+
+            AnaliseRunStep::query()->where('analise_run_id', $run->id)->delete();
+            AnaliseRunContact::query()->where('analise_run_id', $run->id)->delete();
+            AnaliseRunIp::query()->where('analise_run_id', $run->id)->delete();
+            AnaliseRunMessage::query()->where('analise_run_id', $run->id)->delete();
+            AnaliseRunMedia::query()->where('analise_run_id', $run->id)->delete();
+            AnaliseRunEvent::query()->where('analise_run_id', $run->id)->delete();
+            $run->delete();
+
+            $mainRun->forceFill([
+                'summary' => null,
+                'finished_at' => null,
+            ])->save();
+        }
     }
 
-    private function extractTextFromFile(string $absPath, string $storedPath): string
+    protected function extractGoogleRunEmail(AnaliseRun $run): ?string
     {
-        $ext = strtolower(pathinfo($storedPath, PATHINFO_EXTENSION));
-
-        if ($ext === 'zip') {
-            return $this->extractTextFromZip($absPath);
+        $target = trim((string) ($run->target ?? ''));
+        if (filter_var($target, FILTER_VALIDATE_EMAIL)) {
+            return strtolower($target);
         }
 
-        if ($ext === 'pdf') {
-            try {
-                if (class_exists(\Smalot\PdfParser\Parser::class)) {
-                    $parser = new \Smalot\PdfParser\Parser();
-                    $pdf = $parser->parseFile($absPath);
-                    return (string) $pdf->getText();
+        $subscriberEmail = trim((string) data_get($run->summary, 'subscriber_info.email'));
+        if (filter_var($subscriberEmail, FILTER_VALIDATE_EMAIL)) {
+            return strtolower($subscriberEmail);
+        }
+
+        foreach ((array) data_get($run->summary, '_files', []) as $file) {
+            if (! is_string($file)) {
+                continue;
+            }
+
+            if (preg_match('/([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})(?=\.\d+\.(?:MyActivity|GoogleAccount)\.)/i', $file, $match)) {
+                return strtolower($match[1]);
+            }
+        }
+
+        return null;
+    }
+
+    public function setVinculoPage(int $page): void
+    {
+        $this->vinculoPage = max(1, $page);
+    }
+
+    public function openVinculoTimesModal(string $ip, string $target): void
+    {
+        if (! $this->runId) {
+            Notification::make()->title('Run invalido')->danger()->send();
+            return;
+        }
+
+        $run = AnaliseRun::query()->find($this->runId);
+        if (! $run || ! $run->investigation_id) {
+            Notification::make()->title('Relatorio nao encontrado')->danger()->send();
+            return;
+        }
+
+        $normalizedTarget = trim($target);
+        $matchedRunId = null;
+
+        if ($normalizedTarget === $this->resolveRunTarget($run)) {
+            $matchedRunId = (int) $run->id;
+        } else {
+            $otherRuns = AnaliseRun::query()
+                ->where('investigation_id', $run->investigation_id)
+                ->whereKeyNot($run->id)
+                ->get();
+
+            foreach ($otherRuns as $otherRun) {
+                if ($this->resolveRunTarget($otherRun) === $normalizedTarget) {
+                    $matchedRunId = (int) $otherRun->id;
+                    break;
                 }
-            } catch (\Throwable) {
-                return '';
             }
-
-            return '';
         }
 
-        return is_file($absPath) ? (string) file_get_contents($absPath) : '';
+        if (! $matchedRunId) {
+            Notification::make()->title('Horarios nao encontrados para este alvo')->warning()->send();
+            return;
+        }
+
+        $times = AnaliseRunEvent::query()
+            ->where('analise_run_id', $matchedRunId)
+            ->where('event_type', 'access')
+            ->where('ip', $ip)
+            ->orderBy('occurred_at')
+            ->pluck('occurred_at')
+            ->filter()
+            ->map(fn ($occurredAt): string => Carbon::parse($occurredAt, 'UTC')->setTimezone('America/Sao_Paulo')->format('d/m/Y H:i:s'))
+            ->values()
+            ->all();
+
+        if (count($times) === 0) {
+            Notification::make()->title('Horarios nao encontrados para este alvo')->warning()->send();
+            return;
+        }
+
+        $this->vinculoModalIp = $ip;
+        $this->vinculoModalTarget = $normalizedTarget;
+        $this->vinculoModalTimes = $times;
+        $this->mountAction('vinculoTimesModal');
     }
 
-    private function extractTextFromZip(string $absPath): string
+    public function vinculoTimesModal(): Action
     {
-        $zip = new \ZipArchive();
-        if ($zip->open($absPath) !== true) {
-            return '';
+        return Action::make('vinculoTimesModal')
+            ->label('Horarios')
+            ->modalHeading(fn (): string => 'Horarios - ' . ($this->vinculoModalTarget ?? '-') . ' / ' . ($this->vinculoModalIp ?? '-'))
+            ->modalWidth(Width::FiveExtraLarge)
+            ->modalSubmitAction(false)
+            ->modalCancelActionLabel('Fechar')
+            ->modalContent(fn () => view('filament.pages.partials.modal-vinculo-times', [
+                'ip' => $this->vinculoModalIp,
+                'target' => $this->vinculoModalTarget,
+                'times' => $this->vinculoModalTimes,
+            ]))
+            ->after(function (): void {
+                $this->vinculoModalIp = null;
+                $this->vinculoModalTarget = null;
+                $this->vinculoModalTimes = [];
+            });
+    }
+
+    protected function countVinculoRows(AnaliseRun $currentRun): int
+    {
+        return count($this->buildVinculoRows($currentRun));
+    }
+
+    protected function buildVinculoRows(AnaliseRun $currentRun): array
+    {
+        if (! $currentRun->investigation_id) {
+            return [];
         }
 
-        $chunks = [];
-        $allowed = ['txt', 'log', 'csv', 'json', 'html', 'htm', 'xml'];
+        $currentTarget = $this->resolveRunTarget($currentRun);
+        if ($currentTarget === '') {
+            return [];
+        }
 
-        for ($i = 0; $i < $zip->numFiles; $i++) {
-            $name = $zip->getNameIndex($i);
-            if (! is_string($name)) {
+        $currentIpRows = AnaliseRunIp::query()
+            ->where('analise_run_id', $currentRun->id)
+            ->get(['ip', 'occurrences', 'last_seen_at'])
+            ->keyBy('ip');
+
+        if ($currentIpRows->isEmpty()) {
+            return [];
+        }
+
+        $otherRuns = AnaliseRun::query()
+            ->where('investigation_id', $currentRun->investigation_id)
+            ->whereKeyNot($currentRun->id)
+            ->get();
+
+        if ($otherRuns->isEmpty()) {
+            return [];
+        }
+
+        $otherRunTargets = [];
+        foreach ($otherRuns as $run) {
+            $target = $this->resolveRunTarget($run);
+            if ($target !== '') {
+                $otherRunTargets[(int) $run->id] = $target;
+            }
+        }
+
+        if (count($otherRunTargets) === 0) {
+            return [];
+        }
+
+        $sharedIpRows = AnaliseRunIp::query()
+            ->whereIn('analise_run_id', array_keys($otherRunTargets))
+            ->whereIn('ip', $currentIpRows->keys()->all())
+            ->get(['analise_run_id', 'ip', 'occurrences', 'last_seen_at']);
+
+        if ($sharedIpRows->isEmpty()) {
+            return [];
+        }
+
+        $sharedIps = $sharedIpRows->pluck('ip')->unique()->values()->all();
+        $eventRows = AnaliseRunEvent::query()
+            ->whereIn('analise_run_id', array_merge([(int) $currentRun->id], array_keys($otherRunTargets)))
+            ->where('event_type', 'access')
+            ->whereIn('ip', $sharedIps)
+            ->orderBy('occurred_at')
+            ->get(['analise_run_id', 'ip', 'occurred_at']);
+
+        $eventMeta = [];
+        foreach ($eventRows as $event) {
+            $runId = (int) $event->analise_run_id;
+            $ip = (string) $event->ip;
+            $occurredAt = $event->occurred_at
+                ? Carbon::parse($event->occurred_at, 'UTC')
+                : null;
+
+            if (! $occurredAt) {
                 continue;
             }
 
-            $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
-            if (! in_array($ext, $allowed, true)) {
+            $eventMeta[$runId][$ip] ??= [
+                'count' => 0,
+                'first_seen_at' => $occurredAt,
+                'last_seen_at' => $occurredAt,
+                'times' => [],
+            ];
+
+            $eventMeta[$runId][$ip]['count']++;
+
+            if ($occurredAt->lessThan($eventMeta[$runId][$ip]['first_seen_at'])) {
+                $eventMeta[$runId][$ip]['first_seen_at'] = $occurredAt;
+            }
+
+            if ($occurredAt->greaterThan($eventMeta[$runId][$ip]['last_seen_at'])) {
+                $eventMeta[$runId][$ip]['last_seen_at'] = $occurredAt;
+            }
+
+            $eventMeta[$runId][$ip]['times'][] = $occurredAt
+                ->copy()
+                ->setTimezone('America/Sao_Paulo')
+                ->format('d/m/Y H:i:s');
+        }
+
+        $rowsByIp = [];
+
+        foreach ($sharedIpRows as $sharedIpRow) {
+            $ip = (string) $sharedIpRow->ip;
+            $otherRunId = (int) $sharedIpRow->analise_run_id;
+            $otherTarget = $otherRunTargets[$otherRunId] ?? '';
+
+            if ($otherTarget === '') {
                 continue;
             }
 
-            $content = $zip->getFromIndex($i);
-            if (is_string($content) && trim($content) !== '') {
-                $chunks[] = "\n\n===== {$name} =====\n\n" . $content;
-            }
-        }
-
-        $zip->close();
-
-        return implode("\n\n", $chunks);
-    }
-
-    private function buildIpsMap(array $events): array
-    {
-        $ipsMap = [];
-
-        foreach ($events as $event) {
-            $ip = trim((string) ($event['ip'] ?? ''));
-            if ($ip === '') {
+            $currentIpRow = $currentIpRows->get($ip);
+            if (! $currentIpRow) {
                 continue;
             }
 
-            $time = $event['time_utc'] ?? null;
-            $ts = null;
+            $currentMeta = $eventMeta[(int) $currentRun->id][$ip] ?? [
+                'count' => (int) $currentIpRow->occurrences,
+                'first_seen_at' => $currentIpRow->last_seen_at ? Carbon::parse($currentIpRow->last_seen_at, 'UTC') : null,
+                'last_seen_at' => $currentIpRow->last_seen_at ? Carbon::parse($currentIpRow->last_seen_at, 'UTC') : null,
+                'times' => [],
+            ];
 
-            if ($time instanceof Carbon) {
-                $ts = $time->timestamp;
-            } elseif (is_string($time) && trim($time) !== '') {
-                $ts = strtotime($time) ?: null;
-            } elseif (is_int($time)) {
-                $ts = $time;
+            $otherMeta = $eventMeta[$otherRunId][$ip] ?? [
+                'count' => (int) $sharedIpRow->occurrences,
+                'first_seen_at' => $sharedIpRow->last_seen_at ? Carbon::parse($sharedIpRow->last_seen_at, 'UTC') : null,
+                'last_seen_at' => $sharedIpRow->last_seen_at ? Carbon::parse($sharedIpRow->last_seen_at, 'UTC') : null,
+                'times' => [],
+            ];
+
+            $rowsByIp[$ip] ??= [
+                'ip' => $ip,
+                'accesses' => [
+                    [
+                        'run_id' => (int) $currentRun->id,
+                        'target' => $currentTarget,
+                        'count' => (int) ($currentMeta['count'] ?? 0),
+                        'first_seen' => $this->formatCarbonForVinculo($currentMeta['first_seen_at'] ?? null),
+                        'last_seen' => $this->formatCarbonForVinculo($currentMeta['last_seen_at'] ?? null),
+                        'times' => (array) ($currentMeta['times'] ?? []),
+                        'is_selected' => true,
+                    ],
+                ],
+                'targets_count' => 1,
+                'total_occurrences' => (int) ($currentMeta['count'] ?? 0),
+                'last_seen_at' => $currentMeta['last_seen_at'] ?? null,
+            ];
+
+            $rowsByIp[$ip]['accesses'][] = [
+                'run_id' => $otherRunId,
+                'target' => $otherTarget,
+                'count' => (int) ($otherMeta['count'] ?? 0),
+                'first_seen' => $this->formatCarbonForVinculo($otherMeta['first_seen_at'] ?? null),
+                'last_seen' => $this->formatCarbonForVinculo($otherMeta['last_seen_at'] ?? null),
+                'times' => (array) ($otherMeta['times'] ?? []),
+                'is_selected' => false,
+            ];
+            $rowsByIp[$ip]['targets_count']++;
+            $rowsByIp[$ip]['total_occurrences'] += (int) ($otherMeta['count'] ?? 0);
+
+            $otherLastSeen = $otherMeta['last_seen_at'] ?? null;
+            if (
+                $otherLastSeen instanceof Carbon
+                && (! ($rowsByIp[$ip]['last_seen_at'] instanceof Carbon) || $otherLastSeen->greaterThan($rowsByIp[$ip]['last_seen_at']))
+            ) {
+                $rowsByIp[$ip]['last_seen_at'] = $otherLastSeen;
+            }
+        }
+
+        if (count($rowsByIp) === 0) {
+            return [];
+        }
+
+        $enrichments = IpEnrichment::query()
+            ->whereIn('ip', array_keys($rowsByIp))
+            ->get()
+            ->keyBy('ip');
+
+        $rows = [];
+
+        foreach ($rowsByIp as $ip => $row) {
+            usort($row['accesses'], function (array $left, array $right): int {
+                $leftSelected = (bool) ($left['is_selected'] ?? false);
+                $rightSelected = (bool) ($right['is_selected'] ?? false);
+
+                if ($leftSelected !== $rightSelected) {
+                    return $leftSelected ? -1 : 1;
+                }
+
+                return strcmp((string) ($left['target'] ?? ''), (string) ($right['target'] ?? ''));
+            });
+
+            $enrichment = $enrichments->get($ip);
+            $provider = trim((string) (($enrichment?->isp ?? '') ?: ($enrichment?->org ?? '')));
+
+            $rows[] = [
+                'ip' => $ip,
+                'targets' => implode(' | ', array_map(
+                    fn (array $access): string => (string) ($access['target'] ?? ''),
+                    $row['accesses'],
+                )),
+                'targets_count' => (int) ($row['targets_count'] ?? count($row['accesses'])),
+                'total_occurrences' => (int) ($row['total_occurrences'] ?? 0),
+                'last_seen' => $this->formatCarbonForVinculo($row['last_seen_at'] ?? null),
+                '_last_seen_at' => $row['last_seen_at'] ?? null,
+                'provider' => $provider !== '' ? $provider : 'Desconhecido',
+                'city' => trim((string) ($enrichment?->city ?? '')) ?: 'Desconhecida',
+                'type' => ($enrichment?->mobile ?? false) ? 'Movel' : 'Residencial',
+                'accesses' => $row['accesses'],
+            ];
+        }
+
+        usort($rows, function (array $left, array $right): int {
+            $leftAt = $left['_last_seen_at'] ?? null;
+            $rightAt = $right['_last_seen_at'] ?? null;
+
+            if ($leftAt instanceof Carbon && $rightAt instanceof Carbon) {
+                return $rightAt->getTimestamp() <=> $leftAt->getTimestamp();
             }
 
-            $ipsMap[$ip] ??= ['occurrences' => 0, 'last_seen_ts' => $ts];
-            $ipsMap[$ip]['occurrences']++;
+            return 0;
+        });
 
-            if ($ts && ($ipsMap[$ip]['last_seen_ts'] === null || $ts > $ipsMap[$ip]['last_seen_ts'])) {
-                $ipsMap[$ip]['last_seen_ts'] = $ts;
-            }
+        foreach ($rows as &$row) {
+            unset($row['_last_seen_at']);
         }
+        unset($row);
 
-        return $ipsMap;
+        return $rows;
     }
 
-    private function resolveTarget(array $parsed): ?string
+    protected function formatCarbonForVinculo(mixed $value): ?string
     {
-        $emails = (array) ($parsed['emails'] ?? []);
-        if (count($emails) > 0) {
-            return (string) $emails[0];
+        if (! $value) {
+            return null;
         }
 
-        $identifiers = (array) ($parsed['identifiers'] ?? []);
-        $first = $identifiers[0]['value'] ?? null;
+        $carbon = $value instanceof Carbon ? $value->copy() : Carbon::parse($value, 'UTC');
 
-        return is_string($first) && trim($first) !== '' ? trim($first) : null;
-    }
-
-    private function sanitizeForJson(mixed $value): mixed
-    {
-        if (is_array($value)) {
-            foreach ($value as $key => $child) {
-                $value[$key] = $this->sanitizeForJson($child);
-            }
-
-            return $value;
-        }
-
-        if (is_string($value)) {
-            return $this->toValidUtf8($value, 80_000);
-        }
-
-        return $value;
-    }
-
-    private function toValidUtf8(string $value, int $maxLen): string
-    {
-        $fixed = @iconv('UTF-8', 'UTF-8//IGNORE', $value);
-        if ($fixed === false) {
-            $fixed = preg_replace('/[^\x09\x0A\x0D\x20-\x7E]/', '', $value) ?? $value;
-        }
-
-        if ($maxLen > 0 && strlen($fixed) > $maxLen) {
-            $fixed = substr($fixed, 0, $maxLen);
-        }
-
-        return preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $fixed) ?? $fixed;
+        return $carbon->setTimezone('America/Sao_Paulo')->format('d/m/Y H:i:s');
     }
 }

@@ -49,18 +49,32 @@ class CalendarWidget extends FullCalendarWidget
      */
     public bool $modalSemHorario = false;
 
+    protected function isOwnAgendaOnlyUser(?User $user): bool
+    {
+        return (bool) $user?->hasRole('epc');
+    }
+
+    protected function agendaSelectableUsersQuery()
+    {
+        return User::query()
+            ->where(function ($query) {
+                $query->role('epc')
+                    ->orWhere(fn ($roleQuery) => $roleQuery->role('cartorio_central'));
+            });
+    }
+
     public function mount(): void
     {
         $user = auth()->user();
 
-        if ($user?->hasRole('epc')) {
+        if ($this->isOwnAgendaOnlyUser($user)) {
             $this->agendaUserId = (int) $user->getKey();
             session(['agenda_user_id' => $this->agendaUserId]);
             $this->rememberCalendarSyncSignature();
             return;
         }
 
-        if (! User::query()->role('epc')->exists()) {
+        if (! $this->agendaSelectableUsersQuery()->exists()) {
             $this->agendaUserId = null;
             session()->forget('agenda_user_id');
             $this->calendarSyncSignature = null;
@@ -69,8 +83,7 @@ class CalendarWidget extends FullCalendarWidget
 
         $sessionUserId = session('agenda_user_id');
 
-        $validSessionUserId = User::query()
-            ->role('epc')
+        $validSessionUserId = $this->agendaSelectableUsersQuery()
             ->whereKey($sessionUserId)
             ->value('id');
 
@@ -80,12 +93,13 @@ class CalendarWidget extends FullCalendarWidget
             return;
         }
 
-        $firstEpcId = (int) User::query()
-            ->role('epc')
-            ->orderBy('name')
-            ->value('id');
-
-        $this->agendaUserId = $firstEpcId ?: null;
+        if ($user?->hasRole('cartorio_central')) {
+            $this->agendaUserId = (int) $user->getKey();
+        } else {
+            $this->agendaUserId = (int) $this->agendaSelectableUsersQuery()
+                ->orderBy('name')
+                ->value('id');
+        }
 
         if ($this->agendaUserId) {
             session(['agenda_user_id' => $this->agendaUserId]);
@@ -99,12 +113,12 @@ class CalendarWidget extends FullCalendarWidget
     #[On('agendaUserSelected')]
     public function setAgendaUser(int $userId): void
     {
-        if (auth()->user()?->hasRole('epc')) {
+        if ($this->isOwnAgendaOnlyUser(auth()->user())) {
             return;
         }
 
-        $isEpc = User::query()->role('epc')->whereKey($userId)->exists();
-        if (! $isEpc) {
+        $isSelectableAgendaUser = $this->agendaSelectableUsersQuery()->whereKey($userId)->exists();
+        if (! $isSelectableAgendaUser) {
             return;
         }
 
@@ -188,9 +202,14 @@ class CalendarWidget extends FullCalendarWidget
 
         if (! $user) return false;
 
-        if ($user->hasRole('epc')) return true;
+        if ($user->hasRole('epc') || $user->hasRole('cartorio_central')) return true;
 
-        return User::query()->role('epc')->exists();
+        return User::query()
+            ->where(function ($query) {
+                $query->role('epc')
+                    ->orWhere(fn ($roleQuery) => $roleQuery->role('cartorio_central'));
+            })
+            ->exists();
     }
 
     public function config(): array
