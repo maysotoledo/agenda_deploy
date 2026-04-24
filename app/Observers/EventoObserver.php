@@ -4,8 +4,10 @@ namespace App\Observers;
 
 use App\Models\Evento;
 use App\Models\User;
+use App\Notifications\AgendamentoAlteradoMailNotification;
 use Carbon\Carbon;
 use Filament\Notifications\Notification;
+use Illuminate\Support\Facades\Log;
 
 class EventoObserver
 {
@@ -42,6 +44,44 @@ class EventoObserver
             ->title("Agendamento {$acao}")
             ->body("Por: {$quem}\nData/Hora: {$dataHora}\nIntimado: {$intimado}\nProcedimento: {$proc}")
             ->sendToDatabase($epc);
+    }
+
+    private function notifyEpcByMail(Evento $evento, string $acao): void
+    {
+        if (! in_array($acao, ['criado', 'atualizado'], true)) return;
+        if (! $this->shouldNotifyEpc($evento)) return;
+
+        /** @var User|null $epc */
+        $epc = User::query()->find($evento->user_id);
+        if (! $epc || ! filled($epc->email)) return;
+
+        $quem = auth()->user()?->name ?? 'Sistema';
+
+        try {
+            $epc->notify(new AgendamentoAlteradoMailNotification($evento, $acao, $quem));
+
+            Log::channel('agenda_mail')->info('Email de agendamento enfileirado/enviado.', [
+                'acao' => $acao,
+                'evento_id' => $evento->id,
+                'user_id' => $epc->id,
+                'destinatario' => $epc->email,
+                'remetente' => config('mail.from.address'),
+                'ator' => $quem,
+                'starts_at' => $evento->starts_at,
+            ]);
+        } catch (\Throwable $exception) {
+            Log::channel('agenda_mail')->error('Falha ao disparar email de agendamento.', [
+                'acao' => $acao,
+                'evento_id' => $evento->id,
+                'user_id' => $epc->id,
+                'destinatario' => $epc->email,
+                'remetente' => config('mail.from.address'),
+                'ator' => $quem,
+                'error' => $exception->getMessage(),
+            ]);
+
+            throw $exception;
+        }
     }
 
     private function notifyAdminsStatus(Evento $evento): void
@@ -89,12 +129,14 @@ class EventoObserver
     public function created(Evento $evento): void
     {
         $this->notifyEpc($evento, 'criado');
+        $this->notifyEpcByMail($evento, 'criado');
     }
 
     public function updated(Evento $evento): void
     {
         // 1) atualizações gerais (admin mexendo no agendamento)
         $this->notifyEpc($evento, 'atualizado');
+        $this->notifyEpcByMail($evento, 'atualizado');
 
         // 2) EPC marcando status -> notifica admins
         $this->notifyAdminsStatus($evento);
