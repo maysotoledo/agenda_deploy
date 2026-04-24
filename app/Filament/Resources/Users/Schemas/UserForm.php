@@ -18,7 +18,11 @@ class UserForm
                 TextInput::make('email')
                     ->label('Email address')
                     ->email()
-                    ->required(),
+                    ->required()
+                    ->unique(ignoreRecord: true)
+                    ->validationMessages([
+                        'unique' => 'Este e-mail já foi cadastrado para outro usuário.',
+                    ]),
                // DateTimePicker::make('email_verified_at'),
                 //TextInput::make('password')
                 //    ->password()

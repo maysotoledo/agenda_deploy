@@ -183,10 +183,9 @@ class GoogleCalendarService
     private function makeEventPayload(Evento $evento): array
     {
         $timezone = self::AGENDA_TIMEZONE;
-        $startsAt = Carbon::parse($evento->starts_at, $timezone);
-        $endsAt = $evento->ends_at
-            ? Carbon::parse($evento->ends_at, $timezone)
-            : $startsAt->copy()->addHour();
+        $startsAt = $this->parseAgendaWallClock($evento, 'starts_at');
+        $endsAt = $this->parseAgendaWallClock($evento, 'ends_at')
+            ?: $startsAt->copy()->addHour();
 
         $tipo = $evento->oitiva_online ? 'Online' : 'Presencial';
         $intimado = $evento->intimado ?: 'Agendamento';
@@ -210,6 +209,28 @@ class GoogleCalendarService
                 'timeZone' => $timezone,
             ],
         ];
+    }
+
+    private function parseAgendaWallClock(Evento $evento, string $attribute): ?Carbon
+    {
+        $timezone = self::AGENDA_TIMEZONE;
+        $raw = $evento->getRawOriginal($attribute);
+
+        if (is_string($raw) && trim($raw) !== '') {
+            return Carbon::createFromFormat('Y-m-d H:i:s', $raw, $timezone);
+        }
+
+        $value = $evento->getAttribute($attribute);
+
+        if ($value instanceof Carbon) {
+            return Carbon::createFromFormat('Y-m-d H:i:s', $value->format('Y-m-d H:i:s'), $timezone);
+        }
+
+        if (is_string($value) && trim($value) !== '') {
+            return Carbon::parse($value, $timezone);
+        }
+
+        return null;
     }
 
     private function validAccessToken(User $user): string
