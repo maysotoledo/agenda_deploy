@@ -16,6 +16,7 @@ class AgendamentoAlteradoMailNotification extends Notification
         private readonly Evento $evento,
         private readonly string $acao,
         private readonly ?string $atorNome = null,
+        private readonly string $recipientContext = 'agenda_owner',
     ) {}
 
     public function via(object $notifiable): array
@@ -42,14 +43,18 @@ class AgendamentoAlteradoMailNotification extends Notification
             default => $this->acao,
         };
 
+        $openingLine = $this->recipientContext === 'actor'
+            ? 'Voce ' . ($tipoAcao === 'criado' ? 'criou' : 'editou') . ' um agendamento no sistema.'
+            : 'Um agendamento da sua agenda foi ' . $tipoAcao . '.';
+
         return (new MailMessage)
             ->subject('Agendamento ' . $tipoAcao . ' - ' . config('app.name'))
             ->greeting('Ola, ' . trim((string) ($notifiable->name ?? '')))
-            ->line('Um agendamento da sua agenda foi ' . $tipoAcao . '.')
+            ->line($openingLine)
             ->line('Responsavel pela agenda: ' . $responsavelAgenda)
             ->line('Acao realizada por: ' . $ator)
-            ->line('Data e hora: ' . $dataHora . ' (GMT-3)')
             ->line('Intimado: ' . ($evento->intimado ?: '-'))
+            ->line('Data e hora: ' . $dataHora . ' (GMT-3)')
             ->line('Procedimento: ' . ($evento->numero_procedimento ?: '-'))
             ->line('WhatsApp: ' . ($evento->whatsapp ?: '-'))
             ->line('Modalidade: ' . ($evento->oitiva_online ? 'Online' : 'Presencial'))

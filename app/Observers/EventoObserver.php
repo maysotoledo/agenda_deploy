@@ -49,38 +49,65 @@ class EventoObserver
     private function notifyEpcByMail(Evento $evento, string $acao): void
     {
         if (! in_array($acao, ['criado', 'atualizado'], true)) return;
-        if (! $this->shouldNotifyEpc($evento)) return;
-
-        /** @var User|null $epc */
-        $epc = User::query()->find($evento->user_id);
-        if (! $epc || ! filled($epc->email)) return;
-
         $quem = auth()->user()?->name ?? 'Sistema';
+        $actorId = (int) (auth()->id() ?? 0);
 
-        try {
-            $epc->notify(new AgendamentoAlteradoMailNotification($evento, $acao, $quem));
+        $recipients = [];
 
-            Log::channel('agenda_mail')->info('Email de agendamento enfileirado/enviado.', [
-                'acao' => $acao,
-                'evento_id' => $evento->id,
-                'user_id' => $epc->id,
-                'destinatario' => $epc->email,
-                'remetente' => config('mail.from.address'),
-                'ator' => $quem,
-                'starts_at' => $evento->starts_at,
-            ]);
-        } catch (\Throwable $exception) {
-            Log::channel('agenda_mail')->error('Falha ao disparar email de agendamento.', [
-                'acao' => $acao,
-                'evento_id' => $evento->id,
-                'user_id' => $epc->id,
-                'destinatario' => $epc->email,
-                'remetente' => config('mail.from.address'),
-                'ator' => $quem,
-                'error' => $exception->getMessage(),
-            ]);
+        if ($this->shouldNotifyEpc($evento)) {
+            /** @var User|null $epc */
+            $epc = User::query()->find($evento->user_id);
+            if ($epc && filled($epc->email)) {
+                $recipients[(int) $epc->id] = [
+                    'user' => $epc,
+                    'context' => 'agenda_owner',
+                ];
+            }
+        }
 
-            throw $exception;
+        if ($actorId > 0) {
+            /** @var User|null $actor */
+            $actor = User::query()->find($actorId);
+            if ($actor && filled($actor->email)) {
+                $recipients[(int) $actor->id] = [
+                    'user' => $actor,
+                    'context' => 'actor',
+                ];
+            }
+        }
+
+        foreach ($recipients as $recipient) {
+            /** @var User $user */
+            $user = $recipient['user'];
+            $context = (string) ($recipient['context'] ?? 'agenda_owner');
+
+            try {
+                $user->notify(new AgendamentoAlteradoMailNotification($evento, $acao, $quem, $context));
+
+                Log::channel('agenda_mail')->info('Email de agendamento disparado.', [
+                    'acao' => $acao,
+                    'evento_id' => $evento->id,
+                    'user_id' => $user->id,
+                    'destinatario' => $user->email,
+                    'contexto' => $context,
+                    'remetente' => config('mail.from.address'),
+                    'ator' => $quem,
+                    'starts_at' => $evento->starts_at,
+                ]);
+            } catch (\Throwable $exception) {
+                Log::channel('agenda_mail')->error('Falha ao disparar email de agendamento.', [
+                    'acao' => $acao,
+                    'evento_id' => $evento->id,
+                    'user_id' => $user->id,
+                    'destinatario' => $user->email,
+                    'contexto' => $context,
+                    'remetente' => config('mail.from.address'),
+                    'ator' => $quem,
+                    'error' => $exception->getMessage(),
+                ]);
+
+                throw $exception;
+            }
         }
     }
 
