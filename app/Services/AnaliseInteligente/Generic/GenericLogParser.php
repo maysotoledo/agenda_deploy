@@ -249,9 +249,28 @@ class GenericLogParser
     private function extractEmails(string $text): array
     {
         preg_match_all('/[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/i', $text, $m);
-        $emails = array_values(array_unique(array_map('strtolower', $m[0] ?? [])));
+        $emails = [];
+
+        foreach ($m[0] ?? [] as $match) {
+            $email = $this->sanitizeEmailCandidate($match);
+
+            if (! filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                continue;
+            }
+
+            $emails[] = strtolower($email);
+        }
+
+        $emails = array_values(array_unique($emails));
         sort($emails);
         return $emails;
+    }
+
+    private function sanitizeEmailCandidate(string $email): string
+    {
+        $cleaned = preg_replace('/(?:UTC|GMT0|GMT[+-]?\d+|[+-]\d{2}:\d{2})$/i', '', trim($email));
+
+        return $cleaned !== null ? rtrim($cleaned, ".,;: \t\n\r\0\x0B") : trim($email);
     }
 
     private function guessAction(string $description): ?string

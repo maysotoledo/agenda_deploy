@@ -21,6 +21,7 @@ use Filament\Schemas\Concerns\InteractsWithSchemas;
 use Filament\Schemas\Contracts\HasSchemas;
 use Filament\Schemas\Schema;
 use Filament\Support\Enums\Width;
+use Illuminate\Bus\Dispatcher;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Storage;
@@ -156,11 +157,13 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
 
         $batchId = (string) Str::uuid();
 
-        ProcessInstagramInvestigationJob::dispatch(
-            investigationId: $investigation->id,
-            userId: (int) auth()->id(),
-            storedPaths: array_values($storedPaths),
-            batchId: $batchId,
+        app(Dispatcher::class)->dispatchAfterResponse(
+            new ProcessInstagramInvestigationJob(
+                investigationId: $investigation->id,
+                userId: (int) auth()->id(),
+                storedPaths: array_values($storedPaths),
+                batchId: $batchId,
+            )
         );
 
         $this->investigationId = $investigation->id;
@@ -174,7 +177,7 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
         $this->selectedTargetRunId = null;
         $this->targetRuns = [];
         $this->running = true;
-        $this->progress = 0;
+        $this->progress = 2;
 
         Notification::make()
             ->title('Processamento enviado para a fila')
@@ -507,11 +510,23 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
     protected function formatTargetRuns(array $runs): array
     {
         return array_values(array_map(function (AnaliseRun $run): array {
+            $target = trim((string) (
+                data_get($run->summary, 'vanity_name')
+                ?: data_get($run->summary, 'account_identifier')
+                ?: data_get($run->report, '_parsed.vanity_name')
+                ?: data_get($run->report, '_parsed.account_identifier')
+                ?: $run->target
+                ?: data_get($run->report, '_parsed.target')
+                ?: 'Alvo nao identificado'
+            ));
+
             return [
                 'id' => (int) $run->id,
-                'target' => $run->target ?: (data_get($run->report, '_parsed.target') ?: data_get($run->report, '_parsed.account_identifier') ?: 'Alvo nao identificado'),
+                'target' => $target,
                 'status' => (string) $run->status,
                 'progress' => (int) $run->progress,
+                'total_ips' => isset($run->events_count) ? (int) $run->events_count : $run->events()->count(),
+                'unique_ips' => (int) $run->total_unique_ips,
             ];
         }, $runs));
     }
@@ -528,7 +543,7 @@ class AnaliseInteligenteInsta extends Page implements HasSchemas
 
             if ($runs->isEmpty()) {
                 if ($this->running && $this->investigationId) {
-                    $this->progress = 0;
+                    $this->progress = max($this->progress, 2);
                     return;
                 }
 

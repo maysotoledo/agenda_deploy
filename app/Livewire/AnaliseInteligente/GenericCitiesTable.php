@@ -3,17 +3,12 @@
 namespace App\Livewire\AnaliseInteligente;
 
 use App\Models\AnaliseRunIp;
-use Filament\Support\Contracts\TranslatableContentDriver;
 use Filament\Tables\Columns\TextColumn;
-use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Table;
-use Filament\Tables\Concerns\InteractsWithTable;
-use Livewire\Component;
+use Filament\Tables\TableComponent;
 
-class GenericCitiesTable extends Component implements HasTable
+class GenericCitiesTable extends TableComponent
 {
-    use InteractsWithTable;
-
     public int $runId;
 
     public function table(Table $table): Table
@@ -77,10 +72,5 @@ class GenericCitiesTable extends Component implements HasTable
     public function render()
     {
         return view('livewire.analise-inteligente.generic-cities-table');
-    }
-
-    public function makeFilamentTranslatableContentDriver(): ?TranslatableContentDriver
-    {
-        return null;
     }
 }

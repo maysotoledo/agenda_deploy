@@ -5,19 +5,26 @@ namespace App\Notifications;
 use App\Models\Evento;
 use Carbon\Carbon;
 use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
 
-class AgendamentoAlteradoMailNotification extends Notification
+class AgendamentoAlteradoMailNotification extends Notification implements ShouldQueue
 {
     use Queueable;
+
+    public int $tries = 3;
+    public int $timeout = 120;
 
     public function __construct(
         private readonly Evento $evento,
         private readonly string $acao,
         private readonly ?string $atorNome = null,
         private readonly string $recipientContext = 'agenda_owner',
-    ) {}
+    ) {
+        $this->onConnection('database');
+        $this->afterCommit();
+    }
 
     public function via(object $notifiable): array
     {
@@ -49,15 +56,19 @@ class AgendamentoAlteradoMailNotification extends Notification
 
         return (new MailMessage)
             ->subject('Agendamento ' . $tipoAcao . ' - ' . config('app.name'))
-            ->greeting('Ola, ' . trim((string) ($notifiable->name ?? '')))
-            ->line($openingLine)
-            ->line('Responsavel pela agenda: ' . $responsavelAgenda)
-            ->line('Acao realizada por: ' . $ator)
-            ->line('Intimado: ' . ($evento->intimado ?: '-'))
-            ->line('Data e hora: ' . $dataHora . ' (GMT-3)')
-            ->line('Procedimento: ' . ($evento->numero_procedimento ?: '-'))
-            ->line('WhatsApp: ' . ($evento->whatsapp ?: '-'))
-            ->line('Modalidade: ' . ($evento->oitiva_online ? 'Online' : 'Presencial'))
-            ->line('Se necessario, acesse o sistema para acompanhar os detalhes atualizados.');
+            ->view('emails.agendamento-alterado', [
+                'subject' => 'Agendamento ' . $tipoAcao . ' - ' . config('app.name'),
+                'title' => 'Olá, ' . trim((string) ($notifiable->name ?? '')),
+                'openingLine' => $openingLine,
+                'details' => [
+                    'Responsável pela agenda' => $responsavelAgenda,
+                    'Ação realizada por' => $ator,
+                    'Intimado' => $evento->intimado ?: '-',
+                    'Data e hora' => $dataHora . ' (GMT-3)',
+                    'Procedimento' => $evento->numero_procedimento ?: '-',
+                    'WhatsApp' => $evento->whatsapp ?: '-',
+                    'Modalidade' => $evento->oitiva_online ? 'Online' : 'Presencial',
+                ],
+            ]);
     }
 }

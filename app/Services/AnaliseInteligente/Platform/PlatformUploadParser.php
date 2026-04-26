@@ -160,6 +160,10 @@ class PlatformUploadParser
             return $this->extractTextFragmentsFromZip($absPath, $storedPath);
         }
 
+        if ($this->source === 'google' && ! $this->isRelevantGoogleFragmentName($storedPath)) {
+            return [];
+        }
+
         if ($ext === 'pdf') {
             try {
                 if (class_exists(\Smalot\PdfParser\Parser::class)) {
@@ -228,10 +232,19 @@ class PlatformUploadParser
         if ($this->source === 'google') {
             return str_contains($lower, '/deletion markers/')
                 || str_contains($lower, '/settings/')
-                || str_ends_with($lower, '.mp3');
+                || str_ends_with($lower, '.mp3')
+                || ! $this->isRelevantGoogleFragmentName($lower);
         }
 
         return false;
+    }
+
+    private function isRelevantGoogleFragmentName(string $name): bool
+    {
+        $normalized = strtolower(str_replace('\\', '/', $name));
+
+        return str_contains($normalized, 'subscriberinfo')
+            || str_contains($normalized, 'myactivity');
     }
 
     private function resolveFragmentTarget(array $parsed, string $fragmentName): ?string

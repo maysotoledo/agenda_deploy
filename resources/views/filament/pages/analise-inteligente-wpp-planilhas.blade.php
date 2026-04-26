@@ -82,19 +82,21 @@
                                 <div class="font-semibold break-all">{{ $targetRun['target'] ?? 'Alvo não identificado' }}</div>
                             </div>
 
-                            <span class="rounded-full bg-gray-100 px-2 py-1 text-xs font-medium text-gray-700">
-                                {{ (int) ($targetRun['progress'] ?? 0) }}%
-                            </span>
+                            <div class="text-right text-xs text-gray-500 space-y-1">
+                                <x-filament::badge :color="(int) ($targetRun['progress'] ?? 0) >= 100 ? 'success' : 'warning'">
+                                    {{ (int) ($targetRun['progress'] ?? 0) >= 100 ? 'Concluído' : ((int) ($targetRun['progress'] ?? 0) . '%') }}
+                                </x-filament::badge>
+                            </div>
                         </div>
 
                         <div class="mt-3 grid grid-cols-2 gap-3 text-sm">
                             <div>
-                                <div class="text-xs text-gray-500">Run ID</div>
-                                <div class="font-mono">{{ $targetRun['id'] ?? '-' }}</div>
+                                <div class="text-xs text-gray-500">Total de IPs</div>
+                                <div class="font-semibold">{{ number_format((int) ($targetRun['total_ips'] ?? 0), 0, ',', '.') }}</div>
                             </div>
                             <div>
                                 <div class="text-xs text-gray-500">IPs únicos</div>
-                                <div class="font-semibold">{{ number_format((int) ($targetRun['total_unique_ips'] ?? 0), 0, ',', '.') }}</div>
+                                <div class="font-semibold">{{ number_format((int) ($targetRun['unique_ips'] ?? 0), 0, ',', '.') }}</div>
                             </div>
                         </div>
 

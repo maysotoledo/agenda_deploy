@@ -2,13 +2,13 @@
 
 namespace App\Jobs\AnaliseInteligente\Whatsapp;
 
-use App\Actions\AnaliseInteligente\Whatsapp\CreateWhatsappRunForTargetGroupAction;
+use App\Actions\AnaliseInteligente\Whatsapp\PrepareWhatsappInvestigationUploadAction;
 use App\Models\AnaliseInvestigation;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Log;
 
-class ProcessWhatsappTargetGroupJob implements ShouldQueue
+class ProcessWhatsappInvestigationJob implements ShouldQueue
 {
     use Queueable;
 
@@ -24,7 +24,7 @@ class ProcessWhatsappTargetGroupJob implements ShouldQueue
         $this->onConnection('database');
     }
 
-    public function handle(CreateWhatsappRunForTargetGroupAction $action): void
+    public function handle(PrepareWhatsappInvestigationUploadAction $action): void
     {
         $investigation = AnaliseInvestigation::find($this->investigationId);
         if (! $investigation) {
@@ -36,7 +36,7 @@ class ProcessWhatsappTargetGroupJob implements ShouldQueue
 
     public function failed(\Throwable $exception): void
     {
-        Log::error('Falha ao processar alvo do WhatsApp.', [
+        Log::error('Falha ao preparar investigacao do WhatsApp.', [
             'investigation_id' => $this->investigationId,
             'stored_paths' => $this->storedPaths,
             'error' => $exception->getMessage(),

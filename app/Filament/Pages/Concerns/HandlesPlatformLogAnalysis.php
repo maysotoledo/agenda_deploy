@@ -23,6 +23,7 @@ use Filament\Notifications\Notification;
 use Filament\Schemas\Schema;
 use Filament\Support\Enums\Width;
 use Illuminate\Support\Str;
+use Illuminate\Bus\Dispatcher;
 use Livewire\Attributes\On;
 
 trait HandlesPlatformLogAnalysis
@@ -142,13 +143,15 @@ trait HandlesPlatformLogAnalysis
 
         $batchId = (string) Str::uuid();
 
-        ProcessPlatformInvestigationJob::dispatch(
-            investigationId: $investigation->id,
-            userId: (int) auth()->id(),
-            source: $this->platformSource(),
-            label: $this->platformLabel(),
-            storedPaths: array_values($storedPaths),
-            batchId: $batchId,
+        app(Dispatcher::class)->dispatchAfterResponse(
+            new ProcessPlatformInvestigationJob(
+                investigationId: $investigation->id,
+                userId: (int) auth()->id(),
+                source: $this->platformSource(),
+                label: $this->platformLabel(),
+                storedPaths: array_values($storedPaths),
+                batchId: $batchId,
+            )
         );
 
         $this->investigationId = $investigation->id;
@@ -432,6 +435,8 @@ trait HandlesPlatformLogAnalysis
                 'target' => $target,
                 'status' => (string) $run->status,
                 'progress' => (int) $run->progress,
+                'total_ips' => isset($run->events_count) ? (int) $run->events_count : $run->events()->count(),
+                'unique_ips' => (int) $run->total_unique_ips,
             ];
         }, $runs);
 

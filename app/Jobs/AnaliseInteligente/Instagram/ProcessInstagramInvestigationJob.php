@@ -21,6 +21,8 @@ class ProcessInstagramInvestigationJob implements ShouldQueue
 
     public function handle(CreateInstagramRunsAction $action): void
     {
+        @set_time_limit(0);
+
         $investigation = AnaliseInvestigation::find($this->investigationId);
         if (! $investigation) {
             return;

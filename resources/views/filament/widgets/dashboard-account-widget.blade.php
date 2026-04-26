@@ -2,27 +2,40 @@
     $user = filament()->auth()->user();
     $profileUrl = filament()->getProfileUrl();
     $googleCalendar = app(\App\Services\GoogleCalendarService::class);
+    $brandLogoUrl = \App\Support\BrandingAsset::versionedUrl();
 @endphp
 
 <x-filament-widgets::widget class="fi-account-widget">
     <x-filament::section>
-        <x-filament-panels::avatar.user
-            size="lg"
-            :user="$user"
-            loading="lazy"
-        />
+        <div class="flex flex-col items-center text-center">
+            @if ($brandLogoUrl)
+                <div class="mb-5 flex justify-center">
+                    <img
+                        src="{{ $brandLogoUrl }}"
+                        alt="SACAT"
+                        class="h-auto max-h-44 w-auto rounded-2xl object-contain shadow-sm"
+                    >
+                </div>
+            @endif
 
-        <div class="fi-account-widget-main">
-            <h2 class="fi-account-widget-heading">
-                {{ __('filament-panels::widgets/account-widget.welcome', ['app' => config('app.name')]) }}
-            </h2>
+            <x-filament-panels::avatar.user
+                size="lg"
+                :user="$user"
+                loading="lazy"
+            />
 
-            <p class="fi-account-widget-user-name">
-                {{ filament()->getUserName($user) }}
-            </p>
-        </div>
+            <div class="fi-account-widget-main mt-4">
+                <h2 class="fi-account-widget-heading">
+                    {{ __('filament-panels::widgets/account-widget.welcome', ['app' => config('app.name')]) }}
+                </h2>
 
-        <div class="flex flex-wrap items-center gap-2">
+                <p class="fi-account-widget-user-name">
+                    {{ filament()->getUserName($user) }}
+                </p>
+            </div>
+
+            <div class="mt-6 flex flex-wrap items-center justify-center gap-2">
+                <img
             @if($user?->hasRole('epc') || $user?->hasRole('cartorio_central'))
                 @if($googleCalendar->canSync($user))
                     <form method="post" action="{{ route('google-calendar.disconnect') }}">
@@ -82,6 +95,7 @@
                     {{ __('filament-panels::widgets/account-widget.actions.logout.label') }}
                 </x-filament::button>
             </form>
+            </div>
         </div>
     </x-filament::section>
 </x-filament-widgets::widget>

@@ -225,7 +225,7 @@ class CreateWhatsappRunForTargetGroupAction
             return $run;
         });
 
-        EnrichRunIpsJob::dispatch($run->id);
+        app()->call([(new EnrichRunIpsJob($run->id)), 'handle']);
 
         return $run;
     }

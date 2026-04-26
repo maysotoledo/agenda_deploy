@@ -15,15 +15,20 @@ class EnrichRunIpsJob implements ShouldQueue
 {
     use Queueable;
 
+    public int $timeout = 25;
     public int $tries = 3;
 
     public function __construct(
         public int $runId,
-        public int $chunkSize = 50,
-    ) {}
+        public int $chunkSize = 5,
+    ) {
+        $this->onConnection('database');
+    }
 
     public function handle(): void
     {
+        @set_time_limit(0);
+
         $run = AnaliseRun::find($this->runId);
         if (! $run) {
             return;
@@ -40,45 +45,45 @@ class EnrichRunIpsJob implements ShouldQueue
             'message' => 'Enriquecendo IPs em fila.',
         ])->save();
 
-        $rows = AnaliseRunIp::query()
-            ->where('analise_run_id', $run->id)
-            ->where(function ($query): void {
-                $query->where('enriched', false)->orWhereNull('enriched');
-            })
-            ->limit($this->chunkSize)
-            ->get();
+        while (true) {
+            $rows = AnaliseRunIp::query()
+                ->where('analise_run_id', $run->id)
+                ->where(function ($query): void {
+                    $query->where('enriched', false)->orWhereNull('enriched');
+                })
+                ->limit($this->chunkSize)
+                ->get();
 
-        if ($rows->isEmpty()) {
-            $this->finish($run, $step);
-            return;
+            if ($rows->isEmpty()) {
+                $this->finish($run, $step);
+                return;
+            }
+
+            foreach ($rows as $row) {
+                $this->processIpRow($row);
+            }
+
+            $processed = AnaliseRunIp::query()
+                ->where('analise_run_id', $run->id)
+                ->where('enriched', true)
+                ->count();
+
+            $run->forceFill([
+                'processed_unique_ips' => $processed,
+                'progress' => min(95, $run->total_unique_ips > 0 ? (int) floor(($processed / $run->total_unique_ips) * 90) + 5 : 95),
+                'status' => 'running',
+            ])->save();
+
+            $step->forceFill([
+                'processed' => $processed,
+                'total' => (int) $run->total_unique_ips,
+            ])->save();
+
+            if ($processed >= (int) $run->total_unique_ips) {
+                $this->finish($run, $step);
+                return;
+            }
         }
-
-        foreach ($rows as $row) {
-            $this->processIpRow($row);
-        }
-
-        $processed = AnaliseRunIp::query()
-            ->where('analise_run_id', $run->id)
-            ->where('enriched', true)
-            ->count();
-
-        $run->forceFill([
-            'processed_unique_ips' => $processed,
-            'progress' => min(95, $run->total_unique_ips > 0 ? (int) floor(($processed / $run->total_unique_ips) * 90) + 5 : 95),
-            'status' => 'running',
-        ])->save();
-
-        $step->forceFill([
-            'processed' => $processed,
-            'total' => (int) $run->total_unique_ips,
-        ])->save();
-
-        if ($processed >= (int) $run->total_unique_ips) {
-            $this->finish($run, $step);
-            return;
-        }
-
-        self::dispatch($run->id, $this->chunkSize);
     }
 
     private function finish(AnaliseRun $run, AnaliseRunStep $step): void
@@ -91,7 +96,7 @@ class EnrichRunIpsJob implements ShouldQueue
             'message' => 'Enriquecimento concluido.',
         ])->save();
 
-        BuildPlatformRunSummaryJob::dispatch($run->id);
+        app()->call([(new BuildPlatformRunSummaryJob($run->id)), 'handle']);
     }
 
     private function processIpRow(AnaliseRunIp $row): void
@@ -156,7 +161,7 @@ class EnrichRunIpsJob implements ShouldQueue
     private function fetchFromIpApi(string $ip): array
     {
         try {
-            $response = Http::connectTimeout(1)->timeout(2)->get('http://ip-api.com/json/' . $ip, [
+            $response = Http::connectTimeout(0.5)->timeout(1)->get('http://ip-api.com/json/' . $ip, [
                 'fields' => 'status,message,city,isp,org,mobile',
             ]);
 
@@ -182,7 +187,7 @@ class EnrichRunIpsJob implements ShouldQueue
     private function fetchFromIpWhoIs(string $ip): array
     {
         try {
-            $response = Http::connectTimeout(1)->timeout(2)->get('https://ipwho.is/' . $ip, [
+            $response = Http::connectTimeout(0.5)->timeout(1)->get('https://ipwho.is/' . $ip, [
                 'fields' => 'success,message,city,connection,type',
             ]);
 
@@ -210,7 +215,7 @@ class EnrichRunIpsJob implements ShouldQueue
     private function fetchFromIpApiCo(string $ip): array
     {
         try {
-            $response = Http::connectTimeout(1)->timeout(2)->get('https://ipapi.co/' . $ip . '/json/');
+            $response = Http::connectTimeout(0.5)->timeout(1)->get('https://ipapi.co/' . $ip . '/json/');
             $json = $response->json();
 
             if (! $response->successful() || ! is_array($json) || isset($json['error'])) {
@@ -234,7 +239,7 @@ class EnrichRunIpsJob implements ShouldQueue
     private function fetchFromIpInfo(string $ip): array
     {
         try {
-            $response = Http::connectTimeout(1)->timeout(2)->get('https://ipinfo.io/' . $ip . '/json');
+            $response = Http::connectTimeout(0.5)->timeout(1)->get('https://ipinfo.io/' . $ip . '/json');
             $json = $response->json();
 
             if (! $response->successful() || ! is_array($json) || isset($json['bogon'])) {

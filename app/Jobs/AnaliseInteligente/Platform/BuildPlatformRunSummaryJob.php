@@ -12,7 +12,12 @@ class BuildPlatformRunSummaryJob implements ShouldQueue
 {
     use Queueable;
 
-    public function __construct(public int $runId) {}
+    public int $timeout = 120;
+
+    public function __construct(public int $runId)
+    {
+        $this->onConnection('database');
+    }
 
     public function handle(PlatformRunSummaryService $summaryService): void
     {

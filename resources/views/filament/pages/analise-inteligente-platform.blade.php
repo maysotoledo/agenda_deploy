@@ -81,9 +81,21 @@
                                 <div class="truncate font-semibold">{{ $targetRun['target'] ?? 'Alvo nao identificado' }}</div>
                             </div>
 
-                            <div class="text-right text-xs text-gray-500">
-                                <div>#{{ $targetRun['id'] ?? '-' }}</div>
-                                <div>{{ $targetRun['progress'] ?? 0 }}%</div>
+                            <div class="text-right text-xs text-gray-500 space-y-1">
+                                <x-filament::badge :color="(int) ($targetRun['progress'] ?? 0) >= 100 ? 'success' : 'warning'">
+                                    {{ (int) ($targetRun['progress'] ?? 0) >= 100 ? 'Concluído' : ((int) ($targetRun['progress'] ?? 0) . '%') }}
+                                </x-filament::badge>
+                            </div>
+                        </div>
+
+                        <div class="mt-3 grid grid-cols-2 gap-3 text-sm">
+                            <div>
+                                <div class="text-xs text-gray-500">Total de IPs</div>
+                                <div class="font-semibold">{{ number_format((int) ($targetRun['total_ips'] ?? 0), 0, ',', '.') }}</div>
+                            </div>
+                            <div>
+                                <div class="text-xs text-gray-500">IPs únicos</div>
+                                <div class="font-semibold">{{ number_format((int) ($targetRun['unique_ips'] ?? 0), 0, ',', '.') }}</div>
                             </div>
                         </div>
 
@@ -189,17 +201,6 @@
                                 {{ implode(', ', $report['accounts_found']) }}
                             @elseif(!empty($report['emails_found']))
                                 {{ implode(', ', $report['emails_found']) }}
-                            @else
-                                -
-                            @endif
-                        </div>
-                    </div>
-
-                    <div class="rounded-xl border p-4">
-                        <div class="text-sm text-gray-500">Telefones</div>
-                        <div class="font-semibold break-all">
-                            @if(!empty($report['phones_found']))
-                                {{ implode(', ', $report['phones_found']) }}
                             @else
                                 -
                             @endif

@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\AnaliseInvestigationPdfController;
 use Illuminate\Support\Facades\Route;
 use Filament\Facades\Filament;
 use App\Http\Controllers\GoogleCalendarController;
@@ -18,4 +19,7 @@ Route::middleware('auth')->group(function (): void {
 
     Route::post('/google-calendar/disconnect', [GoogleCalendarController::class, 'disconnect'])
         ->name('google-calendar.disconnect');
+
+    Route::get('/analises/investigacoes/{investigation}/pdf', AnaliseInvestigationPdfController::class)
+        ->name('analises.investigacoes.pdf');
 });

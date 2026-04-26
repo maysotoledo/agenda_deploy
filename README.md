@@ -44,6 +44,20 @@ php artisan key:generate
 php artisan migrate
 ```
 
+## Worker da fila
+
+Para manter o envio de e-mails e demais jobs mais rapido, rode um worker permanente em vez de subir um processo temporario a cada acao:
+
+```bash
+php artisan queue:agenda-worker
+```
+
+Se preferir usar o comando nativo do Laravel:
+
+```bash
+php artisan queue:work database --queue=default --tries=3 --timeout=300 --sleep=1
+```
+
 ---
 
 ## 2) Instalar Filament v4 (Painel)
@@ -749,4 +763,3 @@ php artisan optimize:clear
 ### Livewire “Unable to find component”
 - Garanta que `LivewireComponentsServiceProvider` está registrado em `bootstrap/providers.php`
 - Garanta que os aliases batem com os do provider
-

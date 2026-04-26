@@ -16,6 +16,9 @@ class ProcessPlatformInvestigationJob implements ShouldQueue
 {
     use Queueable;
 
+    public int $timeout = 300;
+    public int $tries = 1;
+
     public function __construct(
         public int $investigationId,
         public int $userId,
@@ -23,10 +26,14 @@ class ProcessPlatformInvestigationJob implements ShouldQueue
         public string $label,
         public array $storedPaths,
         public string $batchId,
-    ) {}
+    ) {
+        $this->onConnection('database');
+    }
 
     public function handle(PersistPlatformRunAction $persistRunAction): void
     {
+        @set_time_limit(0);
+
         $investigation = AnaliseInvestigation::find($this->investigationId);
         if (! $investigation) {
             return;
@@ -62,7 +69,7 @@ class ProcessPlatformInvestigationJob implements ShouldQueue
                 ipsMap: $ipsMap,
             );
 
-            EnrichRunIpsJob::dispatch($run->id);
+            app()->call([(new EnrichRunIpsJob($run->id)), 'handle']);
         }
     }
 

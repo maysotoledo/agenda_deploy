@@ -100,7 +100,7 @@ class MeusRelatorios extends Page implements HasTable
                     ->color(fn (string $state): string => match ($state) {
                         'WhatsApp' => 'success',
                         'Instagram' => 'info',
-                        'Genérico' => 'warning',
+                        'Genérico' => 'gray',
                         'Google' => 'primary',
                         'Apple' => 'gray',
                         default => 'gray',

@@ -83,7 +83,7 @@ class CreateInstagramRunsAction
             $run->report = $report;
             $run->save();
 
-            EnrichRunIpsJob::dispatch($run->id);
+            app()->call([(new EnrichRunIpsJob($run->id)), 'handle']);
         }
 
         return $runs;

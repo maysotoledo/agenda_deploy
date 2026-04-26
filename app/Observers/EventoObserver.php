@@ -5,12 +5,19 @@ namespace App\Observers;
 use App\Models\Evento;
 use App\Models\User;
 use App\Notifications\AgendamentoAlteradoMailNotification;
+use App\Services\Queue\QueueHealthService;
+use App\Services\Queue\QueueWorkerStarter;
 use Carbon\Carbon;
 use Filament\Notifications\Notification;
 use Illuminate\Support\Facades\Log;
 
 class EventoObserver
 {
+    private function shouldUseDatabaseQueue(): bool
+    {
+        return config('queue.default') === 'database';
+    }
+
     private function shouldNotifyEpc(Evento $evento): bool
     {
         if (! $evento->user_id) return false;
@@ -51,6 +58,11 @@ class EventoObserver
         if (! in_array($acao, ['criado', 'atualizado'], true)) return;
         $quem = auth()->user()?->name ?? 'Sistema';
         $actorId = (int) (auth()->id() ?? 0);
+        $usesDatabaseQueue = $this->shouldUseDatabaseQueue();
+        $workerAlive = $usesDatabaseQueue
+            ? app(QueueHealthService::class)->isWorkerAlive()
+            : false;
+        $queuedAnyMail = false;
 
         $recipients = [];
 
@@ -80,9 +92,18 @@ class EventoObserver
             /** @var User $user */
             $user = $recipient['user'];
             $context = (string) ($recipient['context'] ?? 'agenda_owner');
+            $notification = new AgendamentoAlteradoMailNotification($evento, $acao, $quem, $context);
+            $deliveryMode = $usesDatabaseQueue
+                ? ($workerAlive ? 'queue' : 'queue_worker_bootstrap')
+                : 'sync';
 
             try {
-                $user->notify(new AgendamentoAlteradoMailNotification($evento, $acao, $quem, $context));
+                if ($usesDatabaseQueue) {
+                    $user->notify($notification);
+                    $queuedAnyMail = true;
+                } else {
+                    $user->notifyNow($notification);
+                }
 
                 Log::channel('agenda_mail')->info('Email de agendamento disparado.', [
                     'acao' => $acao,
@@ -92,6 +113,7 @@ class EventoObserver
                     'contexto' => $context,
                     'remetente' => config('mail.from.address'),
                     'ator' => $quem,
+                    'modo_envio' => $deliveryMode,
                     'starts_at' => $evento->starts_at,
                 ]);
             } catch (\Throwable $exception) {
@@ -103,11 +125,16 @@ class EventoObserver
                     'contexto' => $context,
                     'remetente' => config('mail.from.address'),
                     'ator' => $quem,
+                    'modo_envio' => $deliveryMode,
                     'error' => $exception->getMessage(),
                 ]);
 
                 throw $exception;
             }
+        }
+
+        if ($queuedAnyMail && $usesDatabaseQueue && ! $workerAlive) {
+            app(QueueWorkerStarter::class)->start();
         }
     }
 

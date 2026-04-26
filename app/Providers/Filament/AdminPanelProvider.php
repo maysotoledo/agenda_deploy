@@ -2,6 +2,7 @@
 
 namespace App\Providers\Filament;
 
+use App\Support\BrandingAsset;
 use App\Filament\Pages\Auth\ChangePassword;
 use App\Filament\Widgets\DashboardAccountWidget;
 use BezhanSalleh\FilamentShield\FilamentShieldPlugin;
@@ -39,8 +40,8 @@ class AdminPanelProvider extends PanelProvider
             ->databaseNotifications()
             ->databaseNotificationsPolling('5s')
             ->profile(ChangePassword::class) // ✅ usa página customizada para alterar senha
-            ->brandName('Cartorius CFS')
-            ->brandLogo(asset('images/logopjc.png'))        // ✅ logo
+            ->brandName('SACAT')
+            ->brandLogo(asset('images/logopjc.png'))
             ->brandLogoHeight('3.5rem')                   // ✅ altura (ajuste)
             ->favicon(asset('images/logopjc.png'))
             ->colors([

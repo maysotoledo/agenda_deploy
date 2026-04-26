@@ -3,17 +3,12 @@
 namespace App\Livewire\AnaliseInteligente;
 
 use App\Models\AnaliseRunIp;
-use Filament\Support\Contracts\TranslatableContentDriver;
 use Filament\Tables\Columns\TextColumn;
-use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Table;
-use Filament\Tables\Concerns\InteractsWithTable;
-use Livewire\Component;
+use Filament\Tables\TableComponent;
 
-class GenericUniqueIpsTable extends Component implements HasTable
+class GenericUniqueIpsTable extends TableComponent
 {
-    use InteractsWithTable;
-
     public int $runId;
 
     public function table(Table $table): Table
@@ -70,10 +65,5 @@ class GenericUniqueIpsTable extends Component implements HasTable
     public function render()
     {
         return view('livewire.analise-inteligente.generic-unique-ips-table');
-    }
-
-    public function makeFilamentTranslatableContentDriver(): ?TranslatableContentDriver
-    {
-        return null;
     }
 }

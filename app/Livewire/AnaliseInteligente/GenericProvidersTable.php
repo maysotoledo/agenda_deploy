@@ -3,17 +3,12 @@
 namespace App\Livewire\AnaliseInteligente;
 
 use App\Models\AnaliseRunIp;
-use Filament\Support\Contracts\TranslatableContentDriver;
 use Filament\Tables\Columns\TextColumn;
-use Filament\Tables\Contracts\HasTable;
 use Filament\Tables\Table;
-use Filament\Tables\Concerns\InteractsWithTable;
-use Livewire\Component;
+use Filament\Tables\TableComponent;
 
-class GenericProvidersTable extends Component implements HasTable
+class GenericProvidersTable extends TableComponent
 {
-    use InteractsWithTable;
-
     public int $runId;
 
     public function openProvider(string $provider): void
@@ -83,10 +78,5 @@ class GenericProvidersTable extends Component implements HasTable
     public function render()
     {
         return view('livewire.analise-inteligente.generic-providers-table');
-    }
-
-    public function makeFilamentTranslatableContentDriver(): ?TranslatableContentDriver
-    {
-        return null;
     }
 }
