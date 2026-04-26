@@ -34,6 +34,11 @@ class AnaliseRun extends Model
         'finished_at' => 'datetime',
     ];
 
+    public function aiAnalyses(): HasMany
+    {
+        return $this->hasMany(AiAnalysis::class);
+    }
+
     public function ips(): HasMany
     {
         return $this->hasMany(AnaliseRunIp::class);

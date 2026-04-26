@@ -52,6 +52,7 @@ class AdminPanelProvider extends PanelProvider
                 'Agenda',
                 'Informação Telemática',
                 'Análise Telemática',
+                'Investigação Telemática',
                 'Férias',
                 'Usuários',
                 'Filament Shield',
